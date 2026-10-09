@@ -1,0 +1,489 @@
+diff --git a/bridge/server.py b/bridge/server.py
+--- a/bridge/server.py
++++ b/bridge/server.py
+@@ -5,2 +5,3 @@
+ from . import core
++from . import production_status
+ 
+@@ -62,2 +63,7 @@
+ 
++@mcp.tool()
++def crew_production_health() -> dict:
++    """Read a sanitized production status snapshot. No commands, paths or credentials."""
++    return production_status.read_snapshot()
++
+ if __name__ == '__main__':
+diff --git a/compose.yaml b/compose.yaml
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -28,2 +28,3 @@
+       - ./audit:/audit:rw
++      - /var/lib/crew-dev-bridge/diagnostics:/run/crew-diagnostics:ro
+   runner:
+diff --git a/bridge/production_status.py b/bridge/production_status.py
+new file mode 100644
+--- /dev/null
++++ b/bridge/production_status.py
+@@ -0,0 +1,102 @@
++"""Read a host-generated, strictly allowlisted CREW production status snapshot.
++
++The development bridge never executes commands on the production host and
++cannot access the production source, sockets, database or service credentials.
++"""
++from __future__ import annotations
++
++import json
++import re
++import stat
++from datetime import datetime, timezone
++from pathlib import Path
++
++SNAPSHOT_FILE = Path('/run/crew-diagnostics/status.json')
++MAX_BYTES = 4096
++MAX_AGE_SECONDS = 900
++SERVICES = ('crew', 'nginx', 'docker', 'crew-tunnel')
++SERVICE_STATES = frozenset(('active', 'inactive', 'failed', 'activating', 'deactivating', 'unknown'))
++_HEX_SHA = re.compile(r'^[0-9a-f]{40}$')
++_SAFE_BRANCH = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_./-]{0,79}$')
++
++
++def _not_ready(reason: str, checked_at: str | None = None) -> dict:
++    result = {'available': False, 'reason': reason, 'production_access': 'snapshot_only'}
++    if checked_at is not None:
++        result['checked_at'] = checked_at
++    return result
++
++
++def read_snapshot(path: Path = SNAPSHOT_FILE, *, now: datetime | None = None) -> dict:
++    """Return sanitized fields from a recent snapshot, never arbitrary file content.
++
++    The path argument exists for unit tests. The MCP tool supplies no path.
++    """
++    try:
++        if path.is_symlink():
++            return _not_ready('invalid_snapshot')
++        info = path.stat()
++        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES or info.st_size < 2:
++            return _not_ready('invalid_snapshot')
++        with path.open('rb') as handle:
++            raw = handle.read(MAX_BYTES + 1)
++        if len(raw) > MAX_BYTES:
++            return _not_ready('invalid_snapshot')
++        data = json.loads(raw)
++    except (OSError, ValueError, UnicodeError):
++        return _not_ready('snapshot_missing_or_unreadable')
++    if not isinstance(data, dict) or type(data.get('schema')) is not int or data.get('schema') != 1:
++        return _not_ready('invalid_snapshot')
++    stamp = data.get('checked_at')
++    try:
++        if not isinstance(stamp, str) or not stamp.endswith('Z'):
++            raise ValueError('Invalid timestamp')
++        dt = datetime.fromisoformat(stamp[:-1] + '+00:00')
++        age = ((now or datetime.now(timezone.utc)) - dt).total_seconds()
++    except (TypeError, ValueError, OverflowError):
++        return _not_ready('invalid_snapshot')
++    if age < -60 or age > MAX_AGE_SECONDS:
++        return _not_ready('stale_snapshot', stamp)
++
++    services = data.get('services')
++    production = data.get('production')
++    host = data.get('host')
++    if not isinstance(services, dict) or not isinstance(production, dict) or not isinstance(host, dict):
++        return _not_ready('invalid_snapshot')
++    if set(services) != set(SERVICES) or any(not isinstance(services[k], str) or services[k] not in SERVICE_STATES for k in SERVICES):
++        return _not_ready('invalid_snapshot')
++
++    commit = production.get('git_commit')
++    if commit is not None and (not isinstance(commit, str) or not _HEX_SHA.fullmatch(commit)):
++        return _not_ready('invalid_snapshot')
++    branch = production.get('git_branch')
++    if branch is not None and (not isinstance(branch, str) or not _SAFE_BRANCH.fullmatch(branch)):
++        return _not_ready('invalid_snapshot')
++    changed = production.get('tracked_or_untracked_changes')
++    if changed is not None and type(changed) is not bool:
++        return _not_ready('invalid_snapshot')
++    http_status = production.get('health_http_status')
++    if http_status is not None and (type(http_status) is not int or not (100 <= http_status <= 599)):
++        return _not_ready('invalid_snapshot')
++    free_gib = host.get('disk_available_gib')
++    memory_mib = host.get('memory_available_mib')
++    if free_gib is not None and (type(free_gib) not in (int, float) or not (0 <= free_gib <= 1_000_000)):
++        return _not_ready('invalid_snapshot')
++    if memory_mib is not None and (type(memory_mib) is not int or not (0 <= memory_mib <= 10**9)):
++        return _not_ready('invalid_snapshot')
++    # No unknown fields pass through. Database migration is deliberately NOT
++    # queried without a separate read-only DB identity and reviewed design.
++    return {
++        'available': True,
++        'production_access': 'snapshot_only',
++        'checked_at': stamp,
++        'age_seconds': max(0, round(age)),
++        'services': {k: services[k] for k in SERVICES},
++        'production': {
++            'git_commit': commit, 'git_branch': branch,
++            'tracked_or_untracked_changes': changed,
++            'health_http_status': http_status,
++            'database_revision': 'not_checked',
++        },
++        'host': {'disk_available_gib': free_gib, 'memory_available_mib': memory_mib},
++    }
+diff --git a/deploy/production-diagnostics/README.md b/deploy/production-diagnostics/README.md
+new file mode 100644
+--- /dev/null
++++ b/deploy/production-diagnostics/README.md
+@@ -0,0 +1,68 @@
++# CREW read-only production diagnostics — operator review
++
++**Status:** reviewable implementation; NOT installed on the VPS by creating this patch.
++
++## Trust boundary
++
++- The host-only `scripts/production_snapshot.py` collects only fixed, read-only observations. It runs as the existing non-root `crew` user, never receives arguments from ChatGPT, and does not need a GitHub or database token.
++- It writes a small **allowlisted JSON snapshot** to `/var/lib/crew-dev-bridge/diagnostics/status.json`; this directory is owned by `crew`, group `10001`, **no group write**.
++- Docker binds **only this directory** into the MCP bridge as `:ro`. The MCP tool `crew_production_health` reads and validates the JSON; it cannot run commands on the host, inspect `/opt/crew`, or query PostgreSQL.
++- The snapshot excludes filenames, environment values, credentials, application logs, player data, network addresses, and raw subprocess output. The bridge discards unknown snapshot fields and rejects old snapshots (>15 minutes).
++- `database_revision` intentionally reports `not_checked` until a separately designed PostgreSQL read-only role is approved. Do not infer DB migration status from deployed code version.
++- The existing runner remains isolated; runner Docker settings and production units are not modified.
++
++## Before applying
++
++Review this patch and the permissions carefully. On the VPS, `cd /opt/crew-dev-bridge`, record the existing `git status --short` (the earlier runner ownership repair may still be uncommitted), and verify the patch with `git apply --check /path/to/crew-production-diagnostics.patch`. **Do not reset or overwrite local runner fixes.** Applying the patch modifies only development bridge code and its Compose definition; it does not deploy or restart production CREW.
++
++## Host setup (operator-controlled, after patch review)
++
++```bash
++# Run from /opt/crew-dev-bridge after applying the patch.
++# Group 10001 is the pre-existing bridge container's numeric group ID.
++sudo install -d -o crew -g 10001 -m 2750 /var/lib/crew-dev-bridge/diagnostics
++
++# Verify safe Python syntax and reader/unit tests before any bridge restart.
++python3 -m py_compile bridge/production_status.py scripts/production_snapshot.py
++python3 -m unittest discover -s tests -p 'test_production_diagnostics.py' -v
++
++# Provision the unit and timer, but do not enable yet if you want to review them.
++sudo install -m 0644 deploy/production-diagnostics/crew-production-snapshot.service /etc/systemd/system/
++sudo install -m 0644 deploy/production-diagnostics/crew-production-snapshot.timer /etc/systemd/system/
++sudo systemctl daemon-reload
++
++# Generate one snapshot safely and inspect metadata (no secrets are collected).
++sudo systemctl start crew-production-snapshot.service
++sudo systemctl status crew-production-snapshot.service --no-pager
++sudo ls -ld /var/lib/crew-dev-bridge/diagnostics
++sudo ls -l /var/lib/crew-dev-bridge/diagnostics/status.json
++sudo cat /var/lib/crew-dev-bridge/diagnostics/status.json
++
++# Validate Compose, rebuild and recreate the bridge container ONLY (not the runner).
++docker compose config --quiet
++docker compose up -d --no-deps --build bridge
++
++docker compose ps
++systemctl is-active crew nginx docker crew-tunnel
++
++# If everything checks out, enable a fresh snapshot every five minutes.
++sudo systemctl enable --now crew-production-snapshot.timer
++```
++
++MCP may need a refresh/reconnect to discover the new `crew_production_health` tool. It never accepts a command/path argument. If permission or filesystem checks fail, stop before recreating the bridge.
++
++## Rollback (does not touch CREW production)
++
++```bash
++sudo systemctl disable --now crew-production-snapshot.timer
++sudo systemctl stop crew-production-snapshot.service
++```
++
++Then revert only the reviewed bridge patch changes (respecting other local changes). Restore the bridge image via the reviewed previous commit and recreate only the bridge container. Do not run `git reset --hard`, `docker compose down`, or change the `crew` production unit.
++
++## Known limitations
++
++- The collector is deliberately read-only, not an infrastructure management interface.
++- `git status` is observed without fetching remotes. Compare the SHA separately with GitHub's `main` to detect deployments lagging the repository.
++- The health check uses the existing local CREW Unix socket and fixed `/health` endpoint; if the `crew` account cannot access the socket, `health_http_status` is `null` rather than guessing.
++- Snapshot generation depends on the host's existing `crew` account and filesystem ownership. No production service configuration is changed.
+diff --git a/deploy/production-diagnostics/crew-production-snapshot.service b/deploy/production-diagnostics/crew-production-snapshot.service
+new file mode 100644
+--- /dev/null
++++ b/deploy/production-diagnostics/crew-production-snapshot.service
+@@ -0,0 +1,20 @@
++[Unit]
++Description=Sanitized read-only CREW production status snapshot
++After=local-fs.target
++
++[Service]
++Type=oneshot
++User=crew
++UMask=0027
++ExecStart=/usr/bin/python3 /opt/crew-dev-bridge/scripts/production_snapshot.py
++NoNewPrivileges=yes
++PrivateTmp=yes
++ProtectSystem=strict
++ProtectHome=yes
++ReadWritePaths=/var/lib/crew-dev-bridge/diagnostics
++CapabilityBoundingSet=
++RestrictAddressFamilies=AF_UNIX
++RestrictSUIDSGID=yes
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/deploy/production-diagnostics/crew-production-snapshot.timer b/deploy/production-diagnostics/crew-production-snapshot.timer
+new file mode 100644
+--- /dev/null
++++ b/deploy/production-diagnostics/crew-production-snapshot.timer
+@@ -0,0 +1,12 @@
++[Unit]
++Description=Refresh sanitized CREW production status every five minutes
++
++[Timer]
++OnBootSec=1min
++OnUnitInactiveSec=5min
++AccuracySec=30s
++Persistent=true
++Unit=crew-production-snapshot.service
++
++[Install]
++WantedBy=timers.target
+diff --git a/scripts/production_snapshot.py b/scripts/production_snapshot.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/production_snapshot.py
+@@ -0,0 +1,138 @@
++#!/usr/bin/env python3
++"""Fixed, read-only production checks run locally by a restricted timer.
++
++Produces only status codes and counts, never stdout/stderr from Git, service
++logs, environment variables, DB credentials, tracked filenames or game data.
++Requires NO GitHub token, database login, network, or elevated privileges.
++"""
++from __future__ import annotations
++
++import http.client
++import json
++import os
++import socket
++import subprocess
++import tempfile
++from datetime import datetime, timezone
++from pathlib import Path
++
++PRODUCTION = Path('/opt/crew')
++OUTPUT_DIR = Path('/var/lib/crew-dev-bridge/diagnostics')
++HEALTH_SOCKET = '/run/crew/crew.sock'
++SERVICE_NAMES = ('crew', 'nginx', 'docker', 'crew-tunnel')
++RUN_ENV = {
++    'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'LC_ALL': 'C',
++    'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
++    'GIT_OPTIONAL_LOCKS': '0', 'GIT_TERMINAL_PROMPT': '0',
++}
++
++
++def _run(command: list[str], timeout: float = 5.0):
++    try:
++        return subprocess.run(command, capture_output=True, text=True,
++                              timeout=timeout, env=RUN_ENV, check=False)
++    except (OSError, subprocess.TimeoutExpired):
++        return None
++
++
++def _service_states() -> dict:
++    allowed = {'active', 'inactive', 'failed', 'activating', 'deactivating'}
++    result = {}
++    for name in SERVICE_NAMES:
++        cmd = _run(['/usr/bin/systemctl', 'is-active', name])
++        state = cmd.stdout.strip() if cmd is not None else ''
++        result[name] = state if state in allowed else 'unknown'
++    return result
++
++
++def _git_status() -> dict:
++    prefix = ['/usr/bin/git', '-C', str(PRODUCTION),
++              '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat']
++    commit = _run(prefix + ['rev-parse', 'HEAD'])
++    branch = _run(prefix + ['symbolic-ref', '--quiet', '--short', 'HEAD'])
++    changed = _run(prefix + ['status', '--porcelain=v1', '--untracked-files=normal'], timeout=8)
++    sha = commit.stdout.strip() if commit and commit.returncode == 0 else None
++    if not (isinstance(sha, str) and len(sha) == 40 and all(c in '0123456789abcdef' for c in sha)):
++        sha = None
++    ref = branch.stdout.strip() if branch and branch.returncode == 0 else None
++    if ref and (len(ref) > 80 or not all(c.isascii() and (c.isalnum() or c in '_./-') for c in ref)):
++        ref = None
++    dirty = bool(changed.stdout) if changed and changed.returncode == 0 else None
++    return {'git_commit': sha, 'git_branch': ref, 'tracked_or_untracked_changes': dirty}
++
++
++class _UnixHTTPConnection(http.client.HTTPConnection):
++    def __init__(self):
++        super().__init__('localhost', timeout=3)
++
++    def connect(self):
++        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++        self.sock.settimeout(3)
++        self.sock.connect(HEALTH_SOCKET)
++
++
++def _health_status() -> int | None:
++    connection = _UnixHTTPConnection()
++    try:
++        connection.request('GET', '/health', headers={'Host': 'cadacrew.fun'})
++        response = connection.getresponse()
++        response.read(512)
++        return int(response.status)
++    except (OSError, http.client.HTTPException, ValueError):
++        return None
++    finally:
++        connection.close()
++
++
++def _host_resources() -> dict:
++    try:
++        info = os.statvfs(PRODUCTION)
++        disk = round(info.f_bavail * info.f_frsize / (1024 ** 3), 2)
++    except OSError:
++        disk = None
++    memory = None
++    try:
++        with open('/proc/meminfo', encoding='ascii') as handle:
++            for line in handle:
++                if line.startswith('MemAvailable:'):
++                    memory = int(line.split()[1]) // 1024
++                    break
++    except (OSError, ValueError, IndexError):
++        pass
++    return {'disk_available_gib': disk, 'memory_available_mib': memory}
++
++
++def collect_snapshot() -> dict:
++    production = _git_status()
++    production['health_http_status'] = _health_status()
++    return {
++        'schema': 1,
++        'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
++        'services': _service_states(),
++        'production': production,
++        'host': _host_resources(),
++    }
++
++
++def write_snapshot(snapshot: dict, directory: Path = OUTPUT_DIR) -> None:
++    """Replace within a directory bind mount (NOT a mounted individual file)."""
++    # This directory must exist and be owned by the 'crew' system account,
++    # with group read/traverse for the bridge's numeric GID 10001, no group write.
++    if not directory.is_dir() or directory.is_symlink():
++        raise RuntimeError('Diagnostics output directory is not provisioned')
++    fd, name = tempfile.mkstemp(prefix='.status-', dir=directory)
++    try:
++        os.fchmod(fd, 0o640)
++        with os.fdopen(fd, 'w', encoding='utf-8') as output:
++            json.dump(snapshot, output, sort_keys=True, separators=(',', ':'))
++            output.write('\n')
++            output.flush()
++            os.fsync(output.fileno())
++        os.replace(name, directory / 'status.json')
++    finally:
++        if os.path.exists(name):
++            os.unlink(name)
++
++
++if __name__ == '__main__':
++    write_snapshot(collect_snapshot())
+diff --git a/tests/test_production_diagnostics.py b/tests/test_production_diagnostics.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_production_diagnostics.py
+@@ -0,0 +1,97 @@
++"""Read-only snapshot contract; no subprocess is started by the MCP reader."""
++import json
++import os
++import stat
++import tempfile
++import unittest
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++from bridge.production_status import read_snapshot
++from scripts.production_snapshot import write_snapshot
++
++
++def good_snapshot(now):
++    return {
++        'schema': 1,
++        'checked_at': now.isoformat().replace('+00:00', 'Z'),
++        'services': {name: 'active' for name in ('crew', 'nginx', 'docker', 'crew-tunnel')},
++        'production': {
++            'git_commit': 'a' * 40, 'git_branch': 'main',
++            'tracked_or_untracked_changes': False, 'health_http_status': 200,
++        },
++        'host': {'disk_available_gib': 42.5, 'memory_available_mib': 8192},
++    }
++
++
++class TestProductionSnapshot(unittest.TestCase):
++    def setUp(self):
++        self.folder = tempfile.TemporaryDirectory()
++        self.addCleanup(self.folder.cleanup)
++        self.root = Path(self.folder.name)
++        self.path = self.root / 'status.json'
++        self.now = datetime.now(timezone.utc)
++
++    def save(self, status):
++        self.path.write_text(json.dumps(status), encoding='utf-8')
++
++    def test_missing_does_not_crash_or_expose_paths(self):
++        response = read_snapshot(self.path, now=self.now)
++        self.assertFalse(response['available'])
++        self.assertNotIn(str(self.path), str(response))
++
++    def test_read_only_fresh_snapshot(self):
++        self.save(good_snapshot(self.now))
++        before = self.path.stat().st_mtime_ns
++        out = read_snapshot(self.path, now=self.now)
++        self.assertTrue(out['available'])
++        self.assertEqual(out['production']['git_commit'], 'a' * 40)
++        self.assertEqual(out['services']['crew'], 'active')
++        self.assertEqual(out['production']['database_revision'], 'not_checked')
++        self.assertEqual(before, self.path.stat().st_mtime_ns)
++        self.assertEqual(out['production_access'], 'snapshot_only')
++
++    def test_stale_snapshot_not_reported_as_current(self):
++        old = self.now - timedelta(hours=1)
++        self.save(good_snapshot(old))
++        response = read_snapshot(self.path, now=self.now)
++        self.assertFalse(response['available'])
++        self.assertEqual(response['reason'], 'stale_snapshot')
++        self.assertNotIn('services', response)
++
++    def test_unexpected_fields_cannot_leak(self):
++        data = good_snapshot(self.now)
++        data['prod_secret'] = 'SECRET_DO_NOT_LEAK'
++        data['production']['db_password'] = 'SECRET_DO_NOT_LEAK'
++        data['host']['private_ip'] = 'SECRET_DO_NOT_LEAK'
++        self.save(data)
++        output = read_snapshot(self.path, now=self.now)
++        self.assertTrue(output['available'])
++        self.assertNotIn('SECRET_DO_NOT_LEAK', json.dumps(output))
++
++    def test_invalid_fields_and_oversize_rejected(self):
++        bad = good_snapshot(self.now)
++        bad['services']['crew'] = ['active']
++        self.save(bad)
++        self.assertFalse(read_snapshot(self.path, now=self.now)['available'])
++        self.path.write_text('X' * 5000, encoding='ascii')
++        self.assertFalse(read_snapshot(self.path, now=self.now)['available'])
++
++    def test_symlink_rejected(self):
++        other = self.root / 'target'
++        other.write_text(json.dumps(good_snapshot(self.now)))
++        self.path.symlink_to(other)
++        self.assertEqual(read_snapshot(self.path, now=self.now)['reason'], 'invalid_snapshot')
++
++    def test_atomic_writer_for_directory_bind_mount(self):
++        self.save({'old': True})
++        old_inode = self.path.stat().st_ino
++        write_snapshot(good_snapshot(self.now), self.root)
++        self.assertNotEqual(old_inode, self.path.stat().st_ino)
++        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o640)
++        self.assertTrue(read_snapshot(self.path, now=self.now)['available'])
++        self.assertFalse(any(x.name.startswith('.status-') for x in self.root.iterdir()))
++
++
++if __name__ == '__main__':
++    unittest.main()
