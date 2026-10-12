@@ -1,0 +1,20 @@
+[Unit]
+Description=Sanitized read-only CREW production status snapshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=crew
+UMask=0027
+ExecStart=/usr/bin/python3 /opt/crew-dev-bridge/scripts/production_snapshot.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/crew-dev-bridge/diagnostics
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

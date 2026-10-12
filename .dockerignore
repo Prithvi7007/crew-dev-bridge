@@ -1,0 +1,11 @@
+.git
+source
+queue
+secrets
+audit
+.runner-context
+**/.env
+**/.env.*
+**/__pycache__
+**/node_modules
+**/.pytest_cache
