@@ -1,8 +1,8 @@
 # Build context must be a pinned checkout of crew_games, never the production app.
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-pip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-pip git && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /tmp/crew_requirements.txt
-RUN python3 -m venv /opt/crew-venv && /opt/crew-venv/bin/pip install --no-cache-dir -r /tmp/crew_requirements.txt pytest
+RUN python3 -m venv /opt/crew-venv && /opt/crew-venv/bin/pip install --no-cache-dir -r /tmp/crew_requirements.txt pytest "httpx>=0.27,<1" "mcp>=1.15,<2"
 COPY frontend/package.json frontend/package-lock.json /opt/frontend/
 RUN cd /opt/frontend && npm ci
 WORKDIR /opt/worker

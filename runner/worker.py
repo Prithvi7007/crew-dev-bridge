@@ -10,7 +10,7 @@ import tempfile
 import time
 
 QUEUE = Path('/queue')
-ALLOWED = {'pytest', 'react_build'}
+ALLOWED = {'pytest', 'react_build', 'bridge_syntax'}
 TEST_UID = 10002
 TEST_GID = 10002
 
@@ -55,6 +55,11 @@ def execute(ticket: dict) -> dict:
     kind = ticket['kind']
     if kind not in ALLOWED or not isinstance(job_id, str) or len(job_id) != 32 or any(c not in '0123456789abcdef' for c in job_id):
         raise ValueError('Invalid job')
+    repository = ticket.get('repository', 'Prithvi7007/crew_games')
+    if repository not in ('Prithvi7007/crew_games', 'Prithvi7007/crew-dev-bridge'):
+        raise ValueError('Unsupported repository')
+    if (kind == 'bridge_syntax' and repository != 'Prithvi7007/crew-dev-bridge') or (kind == 'react_build' and repository != 'Prithvi7007/crew_games'):
+        raise ValueError('Check kind does not match repository')
     snapshot = QUEUE / 'snapshots' / job_id
     if not snapshot.is_dir():
         raise ValueError('Missing source snapshot')
@@ -74,6 +79,8 @@ def execute(ticket: dict) -> dict:
                'CI': '1', 'CREW_ENV': 'development'}
         if kind == 'pytest':
             cmd, cwd = ['python', '-m', 'pytest', '-q'], working
+        elif kind == 'bridge_syntax':
+            cmd, cwd = ['python', '-m', 'compileall', '-q', 'bridge', 'runner', 'tests'], working
         else:
             frontend = working / 'frontend'
             (frontend / 'node_modules').symlink_to('/opt/frontend/node_modules', target_is_directory=True)
@@ -121,6 +128,7 @@ def execute(ticket: dict) -> dict:
                 shutil.rmtree(export_root, ignore_errors=True)
                 raise
         return {'job_id': job_id, 'branch': ticket['branch'], 'fingerprint': ticket['fingerprint'],
+                'repository': repository,
                 'kind': kind, 'state': 'passed' if code == 0 else 'failed',
                 'exit_code': code, 'output': output}
 
