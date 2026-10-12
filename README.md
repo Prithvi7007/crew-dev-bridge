@@ -1,6 +1,14 @@
 # CREW Development Bridge — Version 0.2 (private pilot)
 
-A single-repository, **private MCP development bridge** for `Prithvi7007/crew_games`.
+A private MCP development bridge for `Prithvi7007/crew_games` and `Prithvi7007/crew-dev-bridge`.
+
+> **2026 reusable release extension:** The development source workflow now includes a
+> separately installed, zero-argument production release agent for merged CREW
+> commits. See [deploy/release/README.md](deploy/release/README.md). Deployment
+> is **not** enabled simply by merging this repository: the root-owned agent
+> requires a one-time audited host installation. The older v15 pinned deployment
+> tools remain available for compatibility but are not the supported release path.
+
 This is a standalone service. It does **not** modify or mount the production `/opt/crew` app.
 
 > **Status:** Source, static checks, and unit tests validated locally. Docker image builds,
