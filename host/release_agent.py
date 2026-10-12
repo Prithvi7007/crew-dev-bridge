@@ -314,16 +314,36 @@ def _check_release_files(old_sha, target_sha):
             raise ReleaseError("frontend_assets_not_committed")
 
 
-def _stage(commit):
+def _check_stage_permissions():
+    """Verify fixed staging and Git metadata directories as unprivileged crew.
+
+    This is checked in both the read-only plan and before adding a worktree.
+    It never creates a worktree or writes to the production checkout.
+    """
     if WORKTREE.exists() or WORKTREE.is_symlink():
         raise ReleaseError("stale_release_worktree")
+    locations = (
+        (ROOT / ".git", "git_directory"),
+        (ROOT / ".git" / "worktrees", "git_worktree_registry"),
+        (WORKTREE.parent, "release_worktree_parent"),
+    )
+    for path, label in locations:
+        if path.is_symlink() or not path.is_dir():
+            raise ReleaseError("staging_directory_unavailable:" + label)
+        for test_flag in ("-w", "-x"):
+            try:
+                _run(["/usr/bin/test", test_flag, str(path)], user="crew", timeout=8)
+            except ReleaseError as exc:
+                raise ReleaseError("staging_permission_denied:" + label) from exc
+
+
+def _stage(commit):
+    _check_stage_permissions()
     _git("fetch", "--no-tags", "origin", "refs/heads/main", timeout=100)
     fetched = _git("rev-parse", "FETCH_HEAD")
     if fetched != commit:
         raise ReleaseError("remote_main_changed")
     _git("merge-base", "--is-ancestor", "HEAD", commit)
-    WORKTREE.parent.mkdir(parents=True, exist_ok=True)
-    # The installer makes this parent owned by crew.
     _git("worktree", "add", "--detach", str(WORKTREE), commit, timeout=100)
     if _git("rev-parse", "HEAD", cwd=WORKTREE) != commit:
         raise ReleaseError("staging_sha_mismatch")
@@ -510,6 +530,7 @@ def _run_release(job):
 def plan():
     try:
         current, target = _target()
+        _check_stage_permissions()
         base, parsed = _load_env()
         revision = _revision(_env_for_db(base, parsed, DB_PROD))
         return _reply(True, production_commit=current, target_commit=target,
