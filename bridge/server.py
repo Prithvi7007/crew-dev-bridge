@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 from . import core
 from . import production_status
 from . import host_gateway
+from . import release_gateway
 
 # Shared queue objects must never be world-readable or world-writable.
 os.umask(0o007)
@@ -202,6 +203,37 @@ def crew_vps_exec(command: str, args: list[str] | None = None) -> dict:
     Requires the separately deployed unprivileged host diagnostics gateway.
     """
     return host_gateway.vps_exec(command, args)
+
+
+# BEGIN REUSABLE CREW RELEASE: operations are authorized by a root-owned
+# independently installed host agent and GitHub main's successful CI.
+@mcp.tool()
+def crew_release_capabilities() -> dict:
+    """Check whether the reusable, backed-up production release agent is installed."""
+    return release_gateway.call("capabilities")
+
+
+@mcp.tool()
+def crew_release_plan() -> dict:
+    """Preview the live production revision, GitHub main SHA and required CI gate."""
+    return release_gateway.call("plan")
+
+
+@mcp.tool()
+def crew_release_execute() -> dict:
+    """Queue release of verified merged main: backup, rehearse, migrate, deploy, verify.
+
+    No commands, SHAs, paths or arbitrary arguments. A separate root-owned agent
+    handles preflight, CI, backups, staging, and rollback in an audited job.
+    """
+    return release_gateway.call("start")
+
+
+@mcp.tool()
+def crew_release_status() -> dict:
+    """Read the current verified release job's phase and outcome."""
+    return release_gateway.call("status")
+# END REUSABLE CREW RELEASE
 
 
 # BEGIN CREW OPS V2: fixed maintenance tools
