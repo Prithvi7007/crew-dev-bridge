@@ -289,44 +289,71 @@ def test_frontend_asset_and_dependency_checks_fail_closed(monkeypatch, tmp_path)
         release._check_release_files("a" * 40, "b" * 40)
 
 
-def test_root_owned_agent_uses_absolute_runuser_path(monkeypatch):
-    """Restricted systemd PATH must never break user switching."""
-    calls = []
-    class Completed:
-        returncode = 0
-        stdout = "ok"
+def test_release_agent_drops_to_allowlisted_uid_and_groups(monkeypatch):
+    from types import SimpleNamespace
+    seen = []
+    monkeypatch.setattr(release.pwd, "getpwnam", lambda name:
+                        SimpleNamespace(pw_uid={"crew": 1101, "postgres": 1102}[name],
+                                        pw_gid={"crew": 1201, "postgres": 1202}[name]))
+    monkeypatch.setattr(release.os, "getgrouplist",
+                        lambda name, gid: [gid, 1337])
+
     def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return Completed()
+        seen.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
     monkeypatch.setattr(release.subprocess, "run", fake_run)
-    result = release._run(["git", "status", "--porcelain"],
-                          user="crew",
-                          env={"PATH": "/usr/bin:/bin"})
-    assert result == "ok"
-    assert calls[0][0][:4] == ["/usr/sbin/runuser", "-u", "crew", "--"]
-    assert calls[0][0][4:] == ["git", "status", "--porcelain"]
+    assert release._run(["git", "status", "--porcelain"], user="crew") == "ok"
+    assert seen[0][0] == ["git", "status", "--porcelain"]
+    assert seen[0][1]["user"] == 1101
+    assert seen[0][1]["group"] == 1201
+    assert seen[0][1]["extra_groups"] == [1201, 1337]
+    assert seen[0][1]["stdin"] == release.subprocess.DEVNULL
+
+    assert release._run(["createdb", "scratch"], user="postgres") == "ok"
+    assert seen[1][1]["user"] == 1102
+    assert seen[1][1]["group"] == 1202
+    assert seen[1][1]["extra_groups"] == [1202, 1337]
+    assert all("runuser" not in " ".join(call[0]) for call in seen)
+
+
+def test_native_identity_rejects_unapproved_user():
+    with pytest.raises(release.ReleaseError, match="unapproved_host_identity"):
+        release._run(["id"], user="root")
+
+
+def test_native_identity_fails_closed_when_user_missing(monkeypatch):
+    def missing_account(_name):
+        raise KeyError("crew")
+    monkeypatch.setattr(release.pwd, "getpwnam", missing_account)
+    with pytest.raises(release.ReleaseError, match="host_identity_unavailable:crew"):
+        release._run(["git"], user="crew")
 
 
 def test_missing_system_executable_reports_safe_actionable_error(monkeypatch):
     def fake_run(argv, **kwargs):
-        raise FileNotFoundError(2, "No such file or directory",
-                                "/usr/sbin/runuser")
+        raise FileNotFoundError(2, "No such file or directory", "/usr/bin/git")
     monkeypatch.setattr(release.subprocess, "run", fake_run)
     with pytest.raises(release.ReleaseError,
-                       match="required_host_executable_missing:runuser"):
-        release._run(["git", "rev-parse", "HEAD"], user="crew")
+                       match="required_host_executable_missing:git"):
+        release._run(["git", "rev-parse", "HEAD"])
 
 
-def test_migration_uses_absolute_runuser_path(monkeypatch, tmp_path):
+def test_migration_uses_native_identity_drop(monkeypatch, tmp_path):
+    from types import SimpleNamespace
     calls = []
-    class Completed:
-        returncode = 0
+    monkeypatch.setattr(release.pwd, "getpwnam", lambda _:
+                        SimpleNamespace(pw_uid=1101, pw_gid=1201))
+    monkeypatch.setattr(release.os, "getgrouplist", lambda _, gid: [gid])
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return Completed()
+        return SimpleNamespace(returncode=0)
     monkeypatch.setattr(release.subprocess, "run", fake_run)
     release._flask_in(tmp_path, {"PATH": "/usr/bin:/bin"})
-    assert calls[0][0][0] == release.RUNUSER
+    assert calls[0][0][0] == str(release.ROOT / ".venv/bin/python")
+    assert calls[0][1]["user"] == 1101
+    assert calls[0][1]["group"] == 1201
+    assert calls[0][1]["extra_groups"] == [1201]
     assert calls[0][1]["cwd"] == tmp_path
 
 
@@ -342,15 +369,15 @@ def test_migration_uses_absolute_runuser_path(monkeypatch, tmp_path):
         (("ls-remote", "origin", "refs/heads/main"),
          "fatal: Could not resolve host: github.com token=private-value",
          "git_remote_main_failed:remote_dns_failed"),
-        (("rev-parse", "HEAD"),
-         "runuser: cannot set groups; confidential info",
-         "git_revision_failed:user_switch_failed"),
     ],
 )
 def test_git_failure_reports_stage_and_safe_reason(monkeypatch, argv, stderr, expected):
     from types import SimpleNamespace
+    monkeypatch.setattr(release, "_drop_identity", lambda user:
+                        {"user": 1101, "group": 1201, "extra_groups": [1201]})
     def fake_run(command, **kwargs):
-        assert command[:4] == ["/usr/sbin/runuser", "-u", "crew", "--"]
+        assert command[0] == "git"
+        assert kwargs["user"] == 1101
         return SimpleNamespace(returncode=128, stderr=stderr, stdout="")
     monkeypatch.setattr(release.subprocess, "run", fake_run)
     with pytest.raises(release.ReleaseError) as err:
@@ -359,6 +386,17 @@ def test_git_failure_reports_stage_and_safe_reason(monkeypatch, argv, stderr, ex
     assert "secret" not in str(err.value)
     assert "private-value" not in str(err.value)
     assert "/opt/crew" not in str(err.value)
+
+
+def test_user_switch_process_permission_failure_is_redacted(monkeypatch):
+    monkeypatch.setattr(release, "_drop_identity", lambda user:
+                        {"user": 1101, "group": 1201, "extra_groups": [1201]})
+    def permission_error(argv, **kwargs):
+        raise PermissionError(1, "secret identity denial", "/hidden/sensitive/path")
+    monkeypatch.setattr(release.subprocess, "run", permission_error)
+    with pytest.raises(release.ReleaseError, match="^host_process_permission_denied$"):
+        release._run(["git", "status"], user="crew")
+
 
 
 def test_release_installer_restarts_worker_before_recreating_socket_mount():

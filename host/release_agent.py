@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shlex
@@ -38,7 +39,6 @@ DB_SCRATCH = "crew_release_verify"
 VALID_SHA = re.compile(r"[a-f0-9]{40}\Z")
 VALID_REV = re.compile(r"v[a-z0-9_]+\Z")
 STATUS_LIMIT = 4096
-RUNUSER = "/usr/sbin/runuser"
 _lock = threading.Lock()
 _active = False
 
@@ -71,29 +71,46 @@ def _failure_reason(stderr):
     return "unknown"
 
 
+def _drop_identity(user):
+    """Drop privileges natively, without invoking a PAM/setuid wrapper.
+
+    The service retains only the host capabilities required to switch to the
+    fixed application/database identities. No caller can choose an arbitrary
+    user, shell command or executable through MCP.
+    """
+    if user not in ("crew", "postgres"):
+        raise ReleaseError("unapproved_host_identity")
+    try:
+        account = pwd.getpwnam(user)
+        groups = os.getgrouplist(user, account.pw_gid)
+    except (KeyError, OSError) as exc:
+        raise ReleaseError("host_identity_unavailable:" + user) from exc
+    return {"user": account.pw_uid, "group": account.pw_gid,
+            "extra_groups": groups}
+
+
 def _run(argv, *, env=None, timeout=90, user=None, failure_stage=None):
-    """Never use a shell; log no stdout or credentials from subprocess failures."""
+    """No shell and no PAM; redact subprocess failures before returning via MCP."""
     cmd = [str(a) for a in argv]
-    if user:
-        cmd = [RUNUSER, "-u", user, "--", *cmd]
+    identity = _drop_identity(user) if user else {}
     try:
         p = subprocess.run(
             cmd, env=env or {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
             capture_output=True, text=True, timeout=timeout, check=False,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, **identity,
         )
     except FileNotFoundError as exc:
-        # Never leak paths or environment values in a failed release plan.
         raise ReleaseError("required_host_executable_missing:" +
                            Path(exc.filename or cmd[0]).name) from exc
+    except PermissionError as exc:
+        raise ReleaseError("host_process_permission_denied") from exc
     except subprocess.TimeoutExpired as exc:
         raise ReleaseError("command_timed_out:" +
-                           Path(cmd[-len(argv)]).name) from exc
+                           Path(cmd[0]).name) from exc
     if p.returncode:
         if failure_stage is not None:
-            # Stage and reason are fixed vocabulary; never return stderr.
             raise ReleaseError(f"{failure_stage}_failed:{_failure_reason(p.stderr)}")
-        raise ReleaseError("command_failed:" + Path(cmd[-len(argv)]).name)
+        raise ReleaseError("command_failed:" + Path(cmd[0]).name)
     return p.stdout.strip()
 
 
@@ -327,15 +344,19 @@ def _postgres(*argv):
 
 
 def _flask_in(worktree, env):
-    cmd = [RUNUSER, "-u", "crew", "--",
-           str(ROOT / ".venv/bin/python"), "-m", "flask", "--app", "run.py", "db-upgrade"]
-    # cwd must be staged tree, not old production files.
+    cmd = [str(ROOT / ".venv/bin/python"), "-m", "flask",
+           "--app", "run.py", "db-upgrade"]
     try:
-        result = subprocess.run(cmd, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
-                                text=True, capture_output=True, timeout=180)
+        result = subprocess.run(
+            cmd, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+            text=True, capture_output=True, timeout=180,
+            **_drop_identity("crew"),
+        )
     except FileNotFoundError as exc:
         raise ReleaseError("required_host_executable_missing:" +
                            Path(exc.filename or cmd[0]).name) from exc
+    except PermissionError as exc:
+        raise ReleaseError("migration_permission_denied") from exc
     except subprocess.TimeoutExpired as exc:
         raise ReleaseError("migration_timed_out") from exc
     if result.returncode:
