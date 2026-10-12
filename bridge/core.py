@@ -15,11 +15,15 @@ import subprocess
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import httpx
 
 REPO = os.environ.get('CREW_REPO', 'Prithvi7007/crew_games')
 WORKSPACE = Path(os.environ.get('CREW_WORKSPACE', '/workspace'))
+BRIDGE_WORKSPACE = Path(os.environ.get('CREW_BRIDGE_WORKSPACE', '/bridge-source'))
+BRIDGE_REPO = 'Prithvi7007/crew-dev-bridge'
+_ACTIVE_REPOSITORY = ContextVar('crew_active_repository', default='crew_games')
 QUEUE = Path(os.environ.get('CREW_QUEUE', '/queue'))
 TOKEN_FILE = Path(os.environ.get('CREW_GITHUB_TOKEN_FILE', '/run/crew-secrets/github_token'))
 BRANCH_RE = re.compile(r'^feature/[a-z0-9][a-z0-9._/-]{1,70}$')
@@ -34,9 +38,29 @@ class BridgeError(Exception):
     pass
 
 
+@contextmanager
+def repository_context(repository: str = 'crew_games'):
+    """Select only the fixed repositories, isolated per request/thread."""
+    if repository not in ('crew_games', 'crew-dev-bridge'):
+        raise BridgeError('Unsupported repository')
+    token = _ACTIVE_REPOSITORY.set(repository)
+    try:
+        yield
+    finally:
+        _ACTIVE_REPOSITORY.reset(token)
+
+
+def _repo() -> str:
+    return REPO if _ACTIVE_REPOSITORY.get() == 'crew_games' else BRIDGE_REPO
+
+
+def _workspace() -> Path:
+    return WORKSPACE if _ACTIVE_REPOSITORY.get() == 'crew_games' else BRIDGE_WORKSPACE
+
+
 def audit(event: str, **details) -> None:
     AUDIT.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({'timestamp': int(time.time()), 'event': event, **details}, sort_keys=True) + '\n'
+    line = json.dumps({'timestamp': int(time.time()), 'event': event, 'repository': _repo(), **details}, sort_keys=True) + '\n'
     fd = os.open(AUDIT, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     try:
         os.write(fd, line.encode('utf-8'))
@@ -54,7 +78,7 @@ def safe_path(path: str, *, must_exist: bool = False) -> Path:
         raise BridgeError('Protected configuration or secret path')
     if pp.parts[:2] == ('.github', 'workflows'):
         raise BridgeError('Workflow changes require manual review outside the bridge')
-    root = WORKSPACE.resolve()
+    root = _workspace().resolve()
     cursor = root
     for part in pp.parts:
         cursor = cursor / part
@@ -75,14 +99,14 @@ def validate_branch(name: str) -> str:
 
 
 def _git(*args: str, input: str | None = None, timeout: int = 30) -> str:
-    if not WORKSPACE.is_dir():
+    if not _workspace().is_dir():
         raise BridgeError('Workspace missing: run bootstrap first')
     # Do not pass bridge credentials to a subprocess. Disable hooks and pagers.
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': '/tmp',
            'LANG': 'C.UTF-8', 'GIT_TERMINAL_PROMPT': '0',
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_OPTIONAL_LOCKS': '0'}
     proc = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat',
-                           '-c', 'diff.external=', *args], cwd=WORKSPACE,
+                           '-c', 'diff.external=', *args], cwd=_workspace(),
                           input=input, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode:
         raise BridgeError(f'Git command failed: {proc.stderr.strip()[:600]}')
@@ -119,6 +143,7 @@ def changed_paths() -> list[str]:
 
 def fingerprint() -> str:
     digest = hashlib.sha256()
+    digest.update(_repo().encode('utf-8') + b'\0')
     digest.update(branch().encode())
     for p in changed_paths():
         target = safe_path(p)
@@ -133,7 +158,7 @@ def fingerprint() -> str:
 
 
 def status() -> dict:
-    return {'repository': REPO, 'branch': branch(), 'head': _git('rev-parse', 'HEAD'),
+    return {'repository': _repo(), 'branch': branch(), 'head': _git('rev-parse', 'HEAD'),
             'changes': changed_paths(), 'fingerprint': fingerprint(),
             'production_access': False}
 
@@ -191,7 +216,7 @@ def github_request(method: str, endpoint: str, payload: dict | None = None) -> d
     if not token:
         raise BridgeError('GitHub credential is empty')
     # Endpoint supplied only by server-owned code, never user input.
-    url = 'https://api.github.com/repos/' + REPO + '/' + endpoint.lstrip('/')
+    url = 'https://api.github.com/repos/' + _repo() + '/' + endpoint.lstrip('/')
     try:
         response = httpx.request(method, url, json=payload, timeout=25,
              headers={'Accept': 'application/vnd.github+json',
@@ -257,12 +282,13 @@ def _snapshot(target: Path) -> None:
     import shutil
     def ignore(_folder, names):
         return [name for name in names if name in {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.pytest_cache', 'dist', 'secrets'} or name.startswith('.env') or (Path(_folder) / name).is_symlink()]
-    shutil.copytree(WORKSPACE, target, ignore=ignore, symlinks=False)
+    shutil.copytree(_workspace(), target, ignore=ignore, symlinks=False)
 
 
 def start_check(kind: str) -> dict:
-    if kind not in ('pytest', 'react_build'):
-        raise BridgeError('Only pytest or react_build are supported')
+    allowed = ('pytest', 'react_build') if _ACTIVE_REPOSITORY.get() == 'crew_games' else ('pytest', 'bridge_syntax')
+    if kind not in allowed:
+        raise BridgeError('Unsupported check kind for selected repository')
     with locked():
         validate_branch(branch())
         job_id = uuid.uuid4().hex
@@ -271,6 +297,7 @@ def start_check(kind: str) -> dict:
         (QUEUE / 'results').mkdir(parents=True, exist_ok=True)
         _snapshot(job_dir)
         ticket = {'job_id': job_id, 'kind': kind, 'fingerprint': fingerprint(), 'branch': branch(),
+                  'repository': _repo(),
                   'created_at': int(time.time())}
         tmp = QUEUE / 'jobs' / (job_id + '.tmp')
         tmp.write_text(json.dumps(ticket))
@@ -285,8 +312,13 @@ def check_status(job_id: str) -> dict:
     result = QUEUE / 'results' / (job_id + '.json')
     if result.is_file():
         data = json.loads(result.read_text())
-        return {k: data.get(k) for k in ('job_id', 'kind', 'state', 'exit_code', 'output', 'fingerprint', 'branch')}
-    if (QUEUE / 'jobs' / (job_id + '.json')).is_file():
+        if data.get('repository', REPO) != _repo():
+            raise BridgeError('Check belongs to a different repository')
+        return {k: data.get(k) for k in ('job_id', 'kind', 'state', 'exit_code', 'output', 'fingerprint', 'branch', 'repository')}
+    queued = QUEUE / 'jobs' / (job_id + '.json')
+    if queued.is_file():
+        if json.loads(queued.read_text()).get('repository', REPO) != _repo():
+            raise BridgeError('Check belongs to a different repository')
         return {'job_id': job_id, 'state': 'queued_or_running'}
     raise BridgeError('Unknown check id')
 
@@ -298,7 +330,8 @@ def _check_passed(kind: str, current: str) -> bool:
     for result in results.glob('*.json'):
         try:
             data = json.loads(result.read_text())
-            if data.get('kind') == kind and data.get('state') == 'passed' and data.get('fingerprint') == current:
+            if (data.get('repository', REPO) == _repo() and data.get('kind') == kind
+                    and data.get('state') == 'passed' and data.get('fingerprint') == current):
                 return True
         except (OSError, ValueError):
             continue
@@ -313,6 +346,8 @@ def sync_frontend_assets(job_id: str) -> dict:
     It never runs repository code, accesses production, or commits anything.
     """
     import stat
+    if _ACTIVE_REPOSITORY.get() != 'crew_games':
+        raise BridgeError('React asset import is only allowed for crew_games')
     if not isinstance(job_id, str) or not re.fullmatch(r'[a-f0-9]{32}', job_id):
         raise BridgeError('Invalid job id')
     allowed = ('app/static/react/player.js', 'app/static/react/player.css')
@@ -396,8 +431,13 @@ def commit_and_push(message: str) -> dict:
         if not paths:
             raise BridgeError('There are no changes to commit')
         current = fingerprint()
-        if not _check_passed('pytest', current) or not _check_passed('react_build', current):
-            raise BridgeError('Both pytest and react_build must pass for the current changes')
+        second_check = 'react_build' if _ACTIVE_REPOSITORY.get() == 'crew_games' else 'bridge_syntax'
+        if not _check_passed('pytest', current) or not _check_passed(second_check, current):
+            raise BridgeError(
+                'Both pytest and react_build must pass for the current changes'
+                if _ACTIVE_REPOSITORY.get() == 'crew_games'
+                else 'Both pytest and bridge_syntax must pass for the current changes'
+            )
         local_sha = _git('rev-parse', 'HEAD')
         remote = github_request('GET', 'git/ref/heads/' + active)
         if remote['object']['sha'] != local_sha:
@@ -430,7 +470,7 @@ def commit_and_push(message: str) -> dict:
                 if target.is_file():
                     target.unlink()
         audit('push_commit', branch=active, commit=commit['sha'], paths=paths)
-        return {'branch': active, 'commit_sha': commit['sha'], 'url': f'https://github.com/{REPO}/commit/{commit["sha"]}'}
+        return {'branch': active, 'commit_sha': commit['sha'], 'url': f'https://github.com/{_repo()}/commit/{commit["sha"]}'}
 
 
 def open_draft_pr(title: str, description: str) -> dict:

@@ -16,60 +16,71 @@ mcp = FastMCP(
 )
 
 @mcp.tool()
-def crew_repo_status() -> dict:
+def crew_repo_status(repository: str = 'crew_games') -> dict:
     """Read the isolated development repository branch, head and local changes."""
-    return core.status()
+    with core.repository_context(repository):
+        return core.status()
 
 @mcp.tool()
-def crew_read_file(path: str) -> dict:
+def crew_read_file(path: str, repository: str = 'crew_games') -> dict:
     """Read a UTF-8 source file by repository-relative path, including its SHA-256 for safe edits."""
-    return core.read_file(path)
+    with core.repository_context(repository):
+        return core.read_file(path)
 
 @mcp.tool()
-def crew_diff() -> dict:
+def crew_diff(repository: str = 'crew_games') -> dict:
     """Show a bounded diff of working-tree changes relative to the current branch head."""
-    return core.diff()
+    with core.repository_context(repository):
+        return core.diff()
 
 @mcp.tool()
-def crew_create_branch(name: str) -> dict:
+def crew_create_branch(name: str, repository: str = 'crew_games') -> dict:
     """Create a GitHub feature/* branch from main and check it out in the isolated workspace."""
-    return core.create_branch(name)
+    with core.repository_context(repository):
+        return core.create_branch(name)
 
 @mcp.tool()
-def crew_write_file(path: str, content: str, expected_sha256: str) -> dict:
+def crew_write_file(path: str, content: str, expected_sha256: str, repository: str = 'crew_games') -> dict:
     """Write UTF-8 code to the active feature branch. Use SHA-256 from crew_read_file; use NEW for a new file."""
-    return core.write_file(path, content, expected_sha256)
+    with core.repository_context(repository):
+        return core.write_file(path, content, expected_sha256)
 
 @mcp.tool()
-def crew_apply_patch(patch: str) -> dict:
+def crew_apply_patch(patch: str, repository: str = 'crew_games') -> dict:
     """Apply an audited unified Git patch to the isolated feature branch (no binary or symlink changes)."""
-    return core.apply_patch(patch)
+    with core.repository_context(repository):
+        return core.apply_patch(patch)
 
 @mcp.tool()
-def crew_start_check(kind: str) -> dict:
+def crew_start_check(kind: str, repository: str = 'crew_games') -> dict:
     """Queue either pytest or react_build in the separate offline sandbox (no arbitrary shell)."""
-    return core.start_check(kind)
+    with core.repository_context(repository):
+        return core.start_check(kind)
 
 @mcp.tool()
-def crew_check_status(job_id: str) -> dict:
+def crew_check_status(job_id: str, repository: str = 'crew_games') -> dict:
     """Read queued test result without initiating another check."""
-    return core.check_status(job_id)
+    with core.repository_context(repository):
+        return core.check_status(job_id)
 
 
 @mcp.tool()
-def crew_sync_frontend_assets(job_id: str) -> dict:
+def crew_sync_frontend_assets(job_id: str, repository: str = 'crew_games') -> dict:
     """Import checked React build outputs from a matching passing sandbox job."""
-    return core.sync_frontend_assets(job_id)
+    with core.repository_context(repository):
+        return core.sync_frontend_assets(job_id)
 
 @mcp.tool()
-def crew_commit_and_push(message: str) -> dict:
+def crew_commit_and_push(message: str, repository: str = 'crew_games') -> dict:
     """Create a commit via GitHub API on feature/* only, requiring passing pytest and React build. Never pushes main."""
-    return core.commit_and_push(message)
+    with core.repository_context(repository):
+        return core.commit_and_push(message)
 
 @mcp.tool()
-def crew_open_draft_pr(title: str, description: str) -> dict:
+def crew_open_draft_pr(title: str, description: str, repository: str = 'crew_games') -> dict:
     """Create a draft GitHub PR from feature/* into main. No merging or deployment capability."""
-    return core.open_draft_pr(title, description)
+    with core.repository_context(repository):
+        return core.open_draft_pr(title, description)
 
 @mcp.tool()
 def crew_production_health() -> dict:
