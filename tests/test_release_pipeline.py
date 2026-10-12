@@ -328,3 +328,43 @@ def test_migration_uses_absolute_runuser_path(monkeypatch, tmp_path):
     release._flask_in(tmp_path, {"PATH": "/usr/bin:/bin"})
     assert calls[0][0][0] == release.RUNUSER
     assert calls[0][1]["cwd"] == tmp_path
+
+
+@pytest.mark.parametrize(
+    "argv,stderr,expected",
+    [
+        (("remote", "get-url", "origin"),
+         "fatal: detected dubious ownership in repository at '/opt/crew'",
+         "git_origin_url_failed:unsafe_repository_ownership"),
+        (("status", "--porcelain"),
+         "fatal: not a git repository: secret-should-not-appear",
+         "git_worktree_status_failed:not_git_repository"),
+        (("ls-remote", "origin", "refs/heads/main"),
+         "fatal: Could not resolve host: github.com token=private-value",
+         "git_remote_main_failed:remote_dns_failed"),
+        (("rev-parse", "HEAD"),
+         "runuser: cannot set groups; confidential info",
+         "git_revision_failed:user_switch_failed"),
+    ],
+)
+def test_git_failure_reports_stage_and_safe_reason(monkeypatch, argv, stderr, expected):
+    from types import SimpleNamespace
+    def fake_run(command, **kwargs):
+        assert command[:4] == ["/usr/sbin/runuser", "-u", "crew", "--"]
+        return SimpleNamespace(returncode=128, stderr=stderr, stdout="")
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    with pytest.raises(release.ReleaseError) as err:
+        release._git(*argv)
+    assert str(err.value) == expected
+    assert "secret" not in str(err.value)
+    assert "private-value" not in str(err.value)
+    assert "/opt/crew" not in str(err.value)
+
+
+def test_release_installer_restarts_worker_before_recreating_socket_mount():
+    installer = (Path(__file__).resolve().parents[1] /
+                 "deploy/release/install.sh").read_text()
+    assert "systemctl restart crew-release.service" in installer
+    assert "--force-recreate --no-deps bridge" in installer
+    assert installer.index("systemctl restart crew-release.service") < installer.index(
+        "docker compose up -d --build --force-recreate --no-deps bridge")

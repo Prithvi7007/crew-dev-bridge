@@ -51,7 +51,27 @@ class ReleaseError(Exception):
     pass
 
 
-def _run(argv, *, env=None, timeout=90, user=None):
+def _failure_reason(stderr):
+    """Classify subprocess failure without returning command output or secrets."""
+    message = (stderr or "").lower()
+    if "runuser:" in message:
+        return "user_switch_failed"
+    if "dubious ownership" in message or "unsafe repository" in message:
+        return "unsafe_repository_ownership"
+    if "not a git repository" in message:
+        return "not_git_repository"
+    if "authentication failed" in message or "permission denied (publickey)" in message or "could not read username" in message:
+        return "remote_authentication_failed"
+    if "could not resolve host" in message or "temporary failure in name resolution" in message:
+        return "remote_dns_failed"
+    if "permission denied" in message:
+        return "permission_denied"
+    if "could not read from remote repository" in message:
+        return "remote_unreachable"
+    return "unknown"
+
+
+def _run(argv, *, env=None, timeout=90, user=None, failure_stage=None):
     """Never use a shell; log no stdout or credentials from subprocess failures."""
     cmd = [str(a) for a in argv]
     if user:
@@ -70,17 +90,34 @@ def _run(argv, *, env=None, timeout=90, user=None):
         raise ReleaseError("command_timed_out:" +
                            Path(cmd[-len(argv)]).name) from exc
     if p.returncode:
+        if failure_stage is not None:
+            # Stage and reason are fixed vocabulary; never return stderr.
+            raise ReleaseError(f"{failure_stage}_failed:{_failure_reason(p.stderr)}")
         raise ReleaseError("command_failed:" + Path(cmd[-len(argv)]).name)
     return p.stdout.strip()
 
 
 def _git(*args, cwd=ROOT, timeout=60):
+    # Reports which fixed Git operation failed; never includes stderr or argv.
+    stages = {
+        "remote": "git_origin_url",
+        "status": "git_worktree_status",
+        "rev-parse": "git_revision",
+        "ls-remote": "git_remote_main",
+        "fetch": "git_fetch",
+        "merge-base": "git_ancestry",
+        "worktree": "git_worktree",
+        "diff": "git_diff",
+        "reset": "git_code_update",
+    }
+    stage = stages.get(args[0], "git_operation") if args else "git_operation"
     return _run(["git", "-c", "core.hooksPath=/dev/null",
                  "-c", "core.fsmonitor=false", "-c", "safe.directory=" + str(cwd),
                  "-C", str(cwd), *args], user="crew", timeout=timeout,
                 env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
                      "HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0",
-                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
+                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
+                failure_stage=stage)
 
 
 def _load_env():
