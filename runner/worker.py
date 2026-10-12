@@ -59,10 +59,17 @@ def execute(ticket: dict) -> dict:
     if not snapshot.is_dir():
         raise ValueError('Missing source snapshot')
     with tempfile.TemporaryDirectory(prefix='crew-check-') as tmp:
-        working = Path(tmp) / 'source'
+        root = Path(tmp)
+        # Keep the top-level temporary directory owned by the supervisor.
+        # The unprivileged test process only needs traversal permission.
+        os.chmod(root, 0o711)
+        working = root / 'source'
+        home = root / 'home'
+        home.mkdir(mode=0o700)
+        os.chown(home, TEST_UID, TEST_GID)
         # Running builds/tests only inside the unprivileged, network-disabled worker.
         shutil.copytree(snapshot, working, symlinks=False)
-        env = {'HOME': tmp, 'PATH': os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin'),
+        env = {'HOME': str(home), 'PATH': os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin'),
                'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONPATH': str(working),
                'CI': '1', 'CREW_ENV': 'development'}
         if kind == 'pytest':
@@ -74,8 +81,45 @@ def execute(ticket: dict) -> dict:
         # The queue is mounted /queue with permissions 2770, owned by
         # 10001:10001. The child is 10002:10002 and cannot traverse it.
         # Only this temp checkout is given to the test UID.
-        _assign_to_test_user(Path(tmp))
+        _assign_to_test_user(working)
         code, output = _run_check(cmd, cwd, env)
+
+        if kind == 'react_build' and code == 0:
+            # Only the supervisor copies bounded, known outputs out of the
+            # unprivileged, network-disabled build checkout.
+            import hashlib
+            import stat
+            import uuid
+            allowed = ('app/static/react/player.js', 'app/static/react/player.css')
+            export_root = QUEUE / 'artifacts' / job_id
+            export_root.mkdir(parents=True, exist_ok=False)
+            # Supervisor is 0:10001; bridge is 10001:10001.
+            # Do not rely on host umask or inherited directory modes.
+            os.chown(export_root, 0, 10001)
+            os.chmod(export_root, 0o750)
+            manifest = {}
+            try:
+                for rel in allowed:
+                    path = working / rel
+                    st = path.lstat()
+                    if not stat.S_ISREG(st.st_mode) or st.st_size > 250_000:
+                        raise ValueError('Unsafe or oversized frontend artifact')
+                    raw = path.read_bytes()
+                    raw.decode('utf-8')
+                    if len(raw) > 250_000:
+                        raise ValueError('Oversized frontend artifact')
+                    dest = export_root / Path(rel).name
+                    dest.write_bytes(raw)
+                    os.chown(dest, 0, 10001)
+                    os.chmod(dest, 0o640)
+                    manifest[rel] = hashlib.sha256(raw).hexdigest()
+                manifest_file = export_root / 'manifest.json'
+                manifest_file.write_text(json.dumps(manifest))
+                os.chown(manifest_file, 0, 10001)
+                os.chmod(manifest_file, 0o640)
+            except Exception:
+                shutil.rmtree(export_root, ignore_errors=True)
+                raise
         return {'job_id': job_id, 'branch': ticket['branch'], 'fingerprint': ticket['fingerprint'],
                 'kind': kind, 'state': 'passed' if code == 0 else 'failed',
                 'exit_code': code, 'output': output}

@@ -21,11 +21,17 @@ services:
       CREW_QUEUE: /queue
       CREW_AUDIT: /audit/events.jsonl
       CREW_GITHUB_TOKEN_FILE: /run/crew-secrets/github_token
+    group_add:
+      - "986"
     volumes:
       - ./source:/workspace:rw
       - ./queue:/queue:rw
       - ./secrets:/run/crew-secrets:ro
       - ./audit:/audit:rw
+      - /var/lib/crew-dev-bridge/diagnostics:/run/crew-diagnostics:ro
+      - /run/crew-ops:/run/crew-ops:ro
+      - /run/crew-deploy:/run/crew-deploy:ro
+      - /run/crew-maint:/run/crew-maint:ro
   runner:
     image: crew-dev-runner:local
     restart: unless-stopped
@@ -37,12 +43,12 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,size=1g,uid=10001,gid=10001
     cap_drop: [ALL]
-    cap_add: [CHOWN, SETUID, SETGID]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 128
     mem_limit: 2g
     init: true
-    cpus: 2.0
+    cpus: 1.0
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
