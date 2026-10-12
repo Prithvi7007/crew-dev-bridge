@@ -38,6 +38,7 @@ DB_SCRATCH = "crew_release_verify"
 VALID_SHA = re.compile(r"[a-f0-9]{40}\Z")
 VALID_REV = re.compile(r"v[a-z0-9_]+\Z")
 STATUS_LIMIT = 4096
+RUNUSER = "/usr/sbin/runuser"
 _lock = threading.Lock()
 _active = False
 
@@ -54,12 +55,20 @@ def _run(argv, *, env=None, timeout=90, user=None):
     """Never use a shell; log no stdout or credentials from subprocess failures."""
     cmd = [str(a) for a in argv]
     if user:
-        cmd = ["runuser", "-u", user, "--", *cmd]
-    p = subprocess.run(
-        cmd, env=env or {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
-        capture_output=True, text=True, timeout=timeout, check=False,
-        stdin=subprocess.DEVNULL,
-    )
+        cmd = [RUNUSER, "-u", user, "--", *cmd]
+    try:
+        p = subprocess.run(
+            cmd, env=env or {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+            capture_output=True, text=True, timeout=timeout, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as exc:
+        # Never leak paths or environment values in a failed release plan.
+        raise ReleaseError("required_host_executable_missing:" +
+                           Path(exc.filename or cmd[0]).name) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseError("command_timed_out:" +
+                           Path(cmd[-len(argv)]).name) from exc
     if p.returncode:
         raise ReleaseError("command_failed:" + Path(cmd[-len(argv)]).name)
     return p.stdout.strip()
@@ -281,11 +290,17 @@ def _postgres(*argv):
 
 
 def _flask_in(worktree, env):
-    cmd = ["runuser", "-u", "crew", "--",
+    cmd = [RUNUSER, "-u", "crew", "--",
            str(ROOT / ".venv/bin/python"), "-m", "flask", "--app", "run.py", "db-upgrade"]
     # cwd must be staged tree, not old production files.
-    result = subprocess.run(cmd, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
-                            text=True, capture_output=True, timeout=180)
+    try:
+        result = subprocess.run(cmd, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+                                text=True, capture_output=True, timeout=180)
+    except FileNotFoundError as exc:
+        raise ReleaseError("required_host_executable_missing:" +
+                           Path(exc.filename or cmd[0]).name) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseError("migration_timed_out") from exc
     if result.returncode:
         raise ReleaseError("migration_failed")
 

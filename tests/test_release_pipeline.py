@@ -287,3 +287,44 @@ def test_frontend_asset_and_dependency_checks_fail_closed(monkeypatch, tmp_path)
     (candidate / "requirements.txt").write_text("arbitrary-upgrade\n")
     with pytest.raises(release.ReleaseError, match="dependency_change_requires_operator_review"):
         release._check_release_files("a" * 40, "b" * 40)
+
+
+def test_root_owned_agent_uses_absolute_runuser_path(monkeypatch):
+    """Restricted systemd PATH must never break user switching."""
+    calls = []
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Completed()
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    result = release._run(["git", "status", "--porcelain"],
+                          user="crew",
+                          env={"PATH": "/usr/bin:/bin"})
+    assert result == "ok"
+    assert calls[0][0][:4] == ["/usr/sbin/runuser", "-u", "crew", "--"]
+    assert calls[0][0][4:] == ["git", "status", "--porcelain"]
+
+
+def test_missing_system_executable_reports_safe_actionable_error(monkeypatch):
+    def fake_run(argv, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory",
+                                "/usr/sbin/runuser")
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    with pytest.raises(release.ReleaseError,
+                       match="required_host_executable_missing:runuser"):
+        release._run(["git", "rev-parse", "HEAD"], user="crew")
+
+
+def test_migration_uses_absolute_runuser_path(monkeypatch, tmp_path):
+    calls = []
+    class Completed:
+        returncode = 0
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Completed()
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    release._flask_in(tmp_path, {"PATH": "/usr/bin:/bin"})
+    assert calls[0][0][0] == release.RUNUSER
+    assert calls[0][1]["cwd"] == tmp_path
