@@ -31,7 +31,8 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_FOWNER
-AmbientCapabilities=
+# Retain only the already bounded credential-drop capabilities across exec.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
 ReadWritePaths=/opt/crew /var/lib/crew-release /var/backups/crew /run/crew-release
 MemoryMax=350M
 TasksMax=80

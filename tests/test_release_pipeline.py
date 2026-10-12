@@ -406,3 +406,36 @@ def test_release_installer_restarts_worker_before_recreating_socket_mount():
     assert "--force-recreate --no-deps bridge" in installer
     assert installer.index("systemctl restart crew-release.service") < installer.index(
         "docker compose up -d --build --force-recreate --no-deps bridge")
+
+
+def test_systemd_agent_retains_only_bounded_identity_drop_capabilities():
+    unit = (Path(__file__).resolve().parents[1] /
+            "deploy/release/crew-release.service").read_text()
+    assert "NoNewPrivileges=true" in unit
+    assert "User=root" in unit
+    assert "Group=986" in unit
+    assert "AmbientCapabilities=CAP_SETUID CAP_SETGID" in unit
+    assert "CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_FOWNER" in unit
+    assert "PrivateTmp=true" in unit
+    assert "ProtectSystem=strict" in unit
+
+
+def test_capabilities_reports_boolean_effective_credential_drop_state(monkeypatch):
+    from types import SimpleNamespace
+    original_read_text = release.Path.read_text
+    def fake_read_text(path, *args, **kwargs):
+        if str(path) == "/proc/self/status":
+            return "Name:\tpython3\nCapEff:\t00000000000000c0\n"
+        return original_read_text(path, *args, **kwargs)
+    monkeypatch.setattr(release.Path, "read_text", fake_read_text)
+    result = release.dispatch({"operation": "capabilities"})
+    assert result["ok"] is True
+    assert result["credential_drop_capabilities"] == {
+        "setgid_effective": True, "setuid_effective": True
+    }
+    monkeypatch.setattr(release.Path, "read_text",
+                        lambda *_args, **_kwargs: "CapEff:\t0000000000000000\n")
+    assert release.dispatch({"operation": "capabilities"})["credential_drop_capabilities"] == {
+        "setgid_effective": False, "setuid_effective": False
+    }
+
