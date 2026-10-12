@@ -19,9 +19,12 @@ install -d -o root -g root -m 0755 /var/lib/crew-release
 install -d -o crew -g www-data -m 0750 /var/lib/crew-release/worktrees
 install -d -o root -g postgres -m 0750 /var/backups/crew
 systemctl daemon-reload
-systemctl enable --now crew-release.service
-# Compose mounts are immutable until the bridge container is recreated.
+systemctl enable crew-release.service
+# enable --now leaves an already-running worker on the previous code revision.
+systemctl restart crew-release.service
+# Recreate only the MCP bridge after the worker's socket directory is replaced.
+# Otherwise Docker may keep a bind mount to the previous socket directory.
 cd "${REPO}"
-docker compose up -d --build --no-deps bridge
+docker compose up -d --build --force-recreate --no-deps bridge
 systemctl is-active --quiet crew-release.service
 echo "CREW reusable release agent installed. Check crew_release_capabilities and crew_release_plan."
