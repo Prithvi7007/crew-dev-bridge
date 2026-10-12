@@ -229,6 +229,7 @@ def test_full_release_pipeline_offline_orders_backup_rehearsal_before_writes(
         events.append("git:" + args[0])
         return merged_sha
     monkeypatch.setattr(release, "_git", fake_git)
+    monkeypatch.setattr(release, "_ensure_public_react_assets", lambda: events.append("assets"))
     monkeypatch.setattr(release, "_health", lambda: events.append("health"))
     release._run_release("offline-happy")
     assert release._read()["state"] == "passed"
@@ -527,3 +528,84 @@ def test_release_installer_checks_staging_after_systemd_restart():
     assert installer.index("systemctl restart crew-release.service") < installer.index(
         "stat -c '%u:%g' /var/lib/crew-release")
     assert "chown -R" not in installer
+
+
+def test_git_checkout_inherits_public_umask_not_private_worker_umask(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(release, "_drop_identity",
+                        lambda _user: {"user": 1101, "group": 1201, "extra_groups": [1201]})
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    release._git("reset", "--hard", "a" * 40)
+    assert calls[0][0][0] == "git"
+    assert calls[0][1]["umask"] == 0o022
+    assert calls[0][1]["user"] == 1101
+    release._run(["systemctl", "restart", "crew.service"])
+    assert calls[1][1]["umask"] == -1
+
+
+def test_public_assets_repair_exact_files_without_following_symlinks(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    root = tmp_path / "app_root"
+    react = root / "app" / "static" / "react"
+    react.mkdir(parents=True)
+    for filename in ("player.js", "player.css"):
+        file = react / filename
+        file.write_text("public React asset")
+        file.chmod(0o600)
+    monkeypatch.setattr(release, "ROOT", root)
+    monkeypatch.setattr(release.pwd, "getpwnam", lambda _:
+                        SimpleNamespace(pw_uid=release.os.getuid()))
+    monkeypatch.setattr(release.grp, "getgrnam", lambda _:
+                        SimpleNamespace(gr_gid=release.os.getgid()))
+    calls = []
+    monkeypatch.setattr(release.os, "fchown",
+                        lambda fd, uid, gid: calls.append((fd, uid, gid)))
+    release._ensure_public_react_assets()
+    assert sorted(file.name for file in react.iterdir()) == ["player.css", "player.js"]
+    for filename in ("player.js", "player.css"):
+        assert (react / filename).stat().st_mode & 0o777 == 0o644
+    assert react.stat().st_mode & 0o777 == 0o755
+    assert len(calls) == 2
+    (react / "player.js").unlink()
+    (react / "player.js").symlink_to(react / "player.css")
+    with pytest.raises(release.ReleaseError, match="public_asset_permission_repair_failed"):
+        release._ensure_public_react_assets()
+
+
+def test_health_checks_retry_transient_unix_socket_failure(monkeypatch):
+    import json
+    calls = []
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: calls.append(("sleep", seconds)))
+    def probe(argv, **kwargs):
+        calls.append(("probe", argv))
+        if len([c for c in calls if c[0] == "probe"]) < 3:
+            raise release.ReleaseError("command_failed:curl")
+        return json.dumps({"status": "ok"})
+    monkeypatch.setattr(release, "_run", probe)
+    release._health()
+    assert len([c for c in calls if c[0] == "probe"]) == 3
+    assert len([c for c in calls if c[0] == "sleep"]) == 2
+    assert all("--unix-socket" in c[1] for c in calls if c[0] == "probe")
+
+
+def test_health_check_fails_closed_after_bounded_retries(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+    def no_readiness(*_args, **_kwargs):
+        attempts.append(1)
+        raise release.ReleaseError("command_failed:curl")
+    monkeypatch.setattr(release, "_run", no_readiness)
+    with pytest.raises(release.ReleaseError, match="^health_check_failed_after_retries$"):
+        release._health()
+    assert len(attempts) == 12
+
+
+def test_release_repair_is_between_git_reset_and_restart():
+    source = (Path(__file__).resolve().parents[1] /
+              "host/release_agent.py").read_text()
+    assert '_git("reset", "--hard", target)\n        code_updated = True\n        _ensure_public_react_assets()' in source
+    assert '_git("reset", "--hard", old_commit)\n                _ensure_public_react_assets()' in source
