@@ -21,6 +21,8 @@ The root-owned release service grants only the pre-existing `CAP_SETUID` and `CA
 
 The worker drops subprocess credentials directly to the fixed `crew` or `postgres` account using Python's subprocess UID/GID/group controls. It does not use PAM or the `runuser` helper, and it never launches an untrusted shell. The systemd service retains `NoNewPrivileges=true` and its restricted capability bounding set.
 
+The read-only release plan now verifies that the fixed production Git metadata, Git worktree registry and release staging parent are writable and traversable as the unprivileged `crew` identity. The installer repairs only the dedicated Git worktree registry directory (not the repository or database) before restarting the agent. Existing or unexpected staging candidates fail closed for operator review.
+
 The first installation is a privileged **human-reviewed trust establishment**. After that, normal future *additive* releases require no new hardcoded SHA or release-specific tool. Destructive/custom migrations or interrupted releases are intentionally stopped for operator review. The bridge cannot safely install its own root agent—doing so would defeat the trust boundary.
 
 ## One-time VPS installation (after this bridge PR is merged)

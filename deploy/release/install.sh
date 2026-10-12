@@ -17,6 +17,15 @@ install -o root -g root -m 0644 "${REPO}/host/release_agent.py" /usr/local/lib/c
 install -o root -g root -m 0644 "${REPO}/deploy/release/crew-release.service" /etc/systemd/system/crew-release.service
 install -d -o root -g root -m 0755 /var/lib/crew-release
 install -d -o crew -g www-data -m 0750 /var/lib/crew-release/worktrees
+# Git worktree add must register metadata as unprivileged crew. Only repair the
+# fixed Git registry directory; never recursively chown production checkout.
+[[ -d /opt/crew/.git && ! -L /opt/crew/.git ]] || {
+  echo "Expected regular production Git metadata directory" >&2; exit 1;
+}
+[[ ! -L /opt/crew/.git/worktrees ]] || {
+  echo "Refusing symlinked Git worktree registry" >&2; exit 1;
+}
+install -d -o crew -g www-data -m 0750 /opt/crew/.git/worktrees
 install -d -o root -g postgres -m 0750 /var/backups/crew
 systemctl daemon-reload
 systemctl enable crew-release.service

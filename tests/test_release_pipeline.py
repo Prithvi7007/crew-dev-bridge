@@ -439,3 +439,62 @@ def test_capabilities_reports_boolean_effective_credential_drop_state(monkeypatc
         "setgid_effective": False, "setuid_effective": False
     }
 
+
+
+def test_release_installer_repairs_only_staging_and_git_worktree_registry():
+    installer = (Path(__file__).resolve().parents[1] /
+                 "deploy/release/install.sh").read_text()
+    assert "install -d -o crew -g www-data -m 0750 /var/lib/crew-release/worktrees" in installer
+    assert "install -d -o crew -g www-data -m 0750 /opt/crew/.git/worktrees" in installer
+    assert "chown -R /opt/crew" not in installer
+    assert "install -d -o crew -g www-data -m 0750 /opt/crew/.git/worktrees" in installer.split(
+        "systemctl restart crew-release.service")[0]
+
+
+def test_staging_permission_check_uses_crew_and_reports_safe_failure(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    main = tmp_path / "prod"
+    (main / ".git" / "worktrees").mkdir(parents=True)
+    parent = tmp_path / "release" / "worktrees"
+    parent.mkdir(parents=True)
+    monkeypatch.setattr(release, "ROOT", main)
+    monkeypatch.setattr(release, "WORKTREE", parent / "candidate")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[-1] == str(main / ".git" / "worktrees") and argv[1] == "-w":
+            raise release.ReleaseError("command_failed:test")
+        return ""
+
+    monkeypatch.setattr(release, "_run", fake_run)
+    with pytest.raises(release.ReleaseError, match="^staging_permission_denied:git_worktree_registry$"):
+        release._check_stage_permissions()
+    assert all(kwargs["user"] == "crew" for _, kwargs in calls)
+    assert all(argv[0] == "/usr/bin/test" for argv, _ in calls)
+
+
+def test_staging_preflight_rejects_stale_or_symlinked_candidate(monkeypatch, tmp_path):
+    main = tmp_path / "prod"
+    (main / ".git" / "worktrees").mkdir(parents=True)
+    parent = tmp_path / "release" / "worktrees"
+    parent.mkdir(parents=True)
+    monkeypatch.setattr(release, "ROOT", main)
+    monkeypatch.setattr(release, "WORKTREE", parent / "candidate")
+    monkeypatch.setattr(release, "_run", lambda *args, **kwargs: "")
+    release._check_stage_permissions()
+    (parent / "candidate").mkdir()
+    with pytest.raises(release.ReleaseError, match="^stale_release_worktree$"):
+        release._check_stage_permissions()
+
+
+def test_release_plan_checks_staging_before_database(monkeypatch):
+    monkeypatch.setattr(release, "_target", lambda: ("a" * 40, "b" * 40))
+    def blocked_stage():
+        raise release.ReleaseError("staging_permission_denied:release_worktree_parent")
+    monkeypatch.setattr(release, "_check_stage_permissions", blocked_stage)
+    monkeypatch.setattr(release, "_load_env",
+                        lambda: pytest.fail("must stop before DB config"))
+    result = release.plan()
+    assert result["ok"] is False
+    assert result["error"] == "staging_permission_denied:release_worktree_parent"
