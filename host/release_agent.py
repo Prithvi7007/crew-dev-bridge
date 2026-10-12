@@ -51,6 +51,23 @@ class ReleaseError(Exception):
     pass
 
 
+def _credential_drop_capabilities():
+    """Report only whether the service has the two fixed identity-drop caps.
+
+    Capability state is read from the worker itself; no host paths, command
+    output or arbitrary process details are returned to the MCP bridge.
+    """
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+        matched = re.search(r"^CapEff:\s*([0-9a-fA-F]+)$", status, re.M)
+        effective = int(matched.group(1), 16) if matched else 0
+        # Linux CAP_SETGID=6, CAP_SETUID=7.
+        return {"setgid_effective": bool(effective & (1 << 6)),
+                "setuid_effective": bool(effective & (1 << 7))}
+    except (OSError, ValueError):
+        return {"setgid_effective": False, "setuid_effective": False}
+
+
 def _failure_reason(stderr):
     """Classify subprocess failure without returning command output or secrets."""
     message = (stderr or "").lower()
@@ -512,7 +529,8 @@ def dispatch(data):
     if op == "capabilities":
         return _reply(True, operations=["capabilities", "plan", "start", "status"],
                       release_agent="reusable_v1",
-                      approval_gate="merged_main_and_successful_github_ci")
+                      approval_gate="merged_main_and_successful_github_ci",
+                      credential_drop_capabilities=_credential_drop_capabilities())
     if op == "plan":
         return plan()
     if op == "status":
