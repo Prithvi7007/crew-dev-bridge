@@ -57,6 +57,23 @@ With the agent installed:
 
 If the worker returns `non_additive_migration_requires_operator_review`, `quality_gate_not_green`, `stale_release_worktree`, `release_already_running_or_interrupted`, or `manual_recovery_required`, **stop and inspect host service logs**. Never work around a failed gate by changing the supplied SHA or invoking a shell through MCP.
 
+## Public React asset permissions and readiness
+
+The host release worker retains its restrictive process-wide umask (077) for
+state and backup bookkeeping, but Git checkout/reset subprocesses now use umask
+022. After a verified main checkout, the worker checks exactly two committed
+public React files, `player.js` and `player.css`, through no-symlink file
+descriptors and normalizes them to mode 0644 with group `www-data`, while the
+public React directory is 0755. This also corrects existing assets created by
+earlier failed releases, and the same repair applies during a code rollback.
+Unexpected owner, file type, missing/empty asset or symlink stops the release.
+
+After restarting the app, the worker retries the fixed local UNIX-socket
+`/health/ready` probe for a bounded startup period before considering rollback.
+Application success requires final release state `passed` plus independent
+production commit and database verification. Never assume a queued release
+succeeded.
+
 ## Validation and rollback
 
 Offline tests: `crew_start_check(kind="pytest", repository="crew-dev-bridge")` and `crew_start_check(kind="bridge_syntax", repository="crew-dev-bridge")`. The tests mock the host and do not touch production.

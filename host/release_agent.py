@@ -6,6 +6,7 @@ the GitHub-verified origin/main head with a successful quality-gate check.
 from __future__ import annotations
 
 import hashlib
+import grp
 import json
 import os
 import pwd
@@ -106,7 +107,7 @@ def _drop_identity(user):
             "extra_groups": groups}
 
 
-def _run(argv, *, env=None, timeout=90, user=None, failure_stage=None):
+def _run(argv, *, env=None, timeout=90, user=None, failure_stage=None, umask=None):
     """No shell and no PAM; redact subprocess failures before returning via MCP."""
     cmd = [str(a) for a in argv]
     identity = _drop_identity(user) if user else {}
@@ -114,7 +115,8 @@ def _run(argv, *, env=None, timeout=90, user=None, failure_stage=None):
         p = subprocess.run(
             cmd, env=env or {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
             capture_output=True, text=True, timeout=timeout, check=False,
-            stdin=subprocess.DEVNULL, **identity,
+            stdin=subprocess.DEVNULL, umask=umask if umask is not None else -1,
+            **identity,
         )
     except FileNotFoundError as exc:
         raise ReleaseError("required_host_executable_missing:" +
@@ -151,7 +153,7 @@ def _git(*args, cwd=ROOT, timeout=60):
                 env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
                      "HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0",
                      "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
-                failure_stage=stage)
+                failure_stage=stage, umask=0o022)
 
 
 def _load_env():
@@ -400,13 +402,64 @@ def _flask_in(worktree, env):
         raise ReleaseError("migration_failed")
 
 
+def _ensure_public_react_assets():
+    """Normalize only two known public files without following symlinks.
+
+    Git subprocesses use 022; this also repairs unchanged files created by an
+    older release subprocess using the root worker's restrictive 077 umask.
+    """
+    crew_uid = pwd.getpwnam("crew").pw_uid
+    web_gid = grp.getgrnam("www-data").gr_gid
+    directory = ROOT / "app" / "static" / "react"
+    directory_fd = None
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory_stat = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != crew_uid:
+            raise ReleaseError("public_asset_directory_not_trusted")
+        # This directory contains public, committed React build files.
+        os.fchmod(directory_fd, 0o755)
+        for filename in ("player.js", "player.css"):
+            fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW,
+                         dir_fd=directory_fd)
+            try:
+                file_stat = os.fstat(fd)
+                if (not stat.S_ISREG(file_stat.st_mode)
+                        or file_stat.st_uid != crew_uid
+                        or file_stat.st_size <= 0):
+                    raise ReleaseError("public_asset_not_trusted:" + filename)
+                os.fchown(fd, -1, web_gid)
+                os.fchmod(fd, 0o644)
+            finally:
+                os.close(fd)
+    except (FileNotFoundError, PermissionError, NotADirectoryError, OSError) as exc:
+        if isinstance(exc, ReleaseError):
+            raise
+        raise ReleaseError("public_asset_permission_repair_failed") from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
 def _health():
-    result = _run(["curl", "--fail", "--silent", "--show-error",
-                   "--max-time", "15", "--unix-socket", "/run/crew/crew.sock",
-                   "-H", "Host: cadacrew.fun", "http://localhost/health/ready"],
-                  timeout=20)
-    if json.loads(result).get("status") != "ok":
-        raise ReleaseError("health_check_failed")
+    """Allow service startup grace time before considering rollback.
+
+    Only probes the fixed local UNIX socket; no network, shell or user inputs.
+    """
+    for attempt in range(12):
+        try:
+            result = _run(["curl", "--fail", "--silent", "--show-error",
+                           "--max-time", "5", "--unix-socket", "/run/crew/crew.sock",
+                           "-H", "Host: cadacrew.fun",
+                           "http://localhost/health/ready"], timeout=8)
+            response = json.loads(result)
+            if isinstance(response, dict) and response.get("status") == "ok":
+                return
+        except (ReleaseError, ValueError):
+            pass
+        if attempt < 11:
+            time.sleep(2)
+    raise ReleaseError("health_check_failed_after_retries")
 
 
 def _save(state):
@@ -491,6 +544,7 @@ def _run_release(job):
         _update(job, "deploy_code", target=target, migrations=pending)
         _git("reset", "--hard", target)
         code_updated = True
+        _ensure_public_react_assets()
         _update(job, "restart_and_health", target=target, migrations=pending)
         _run(["systemctl", "restart", "crew.service"], timeout=60)
         _health()
@@ -504,6 +558,7 @@ def _run_release(job):
         if code_updated:
             try:
                 _git("reset", "--hard", old_commit)
+                _ensure_public_react_assets()
                 _run(["systemctl", "restart", "crew.service"], timeout=60)
                 _health()
                 error += ":code_rolled_back"
