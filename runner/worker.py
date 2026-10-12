@@ -80,7 +80,7 @@ def execute(ticket: dict) -> dict:
         if kind == 'pytest':
             cmd, cwd = ['python', '-m', 'pytest', '-q'], working
         elif kind == 'bridge_syntax':
-            cmd, cwd = ['python', '-m', 'compileall', '-q', 'bridge', 'runner', 'tests'], working
+            cmd, cwd = ['python', '-m', 'compileall', '-q', 'bridge', 'host', 'runner', 'tests'], working
         else:
             frontend = working / 'frontend'
             (frontend / 'node_modules').symlink_to('/opt/frontend/node_modules', target_is_directory=True)

@@ -34,6 +34,7 @@ services:
       - /run/crew-ops:/run/crew-ops:ro
       - /run/crew-deploy:/run/crew-deploy:ro
       - /run/crew-maint:/run/crew-maint:ro
+      - /run/crew-host-diag:/run/crew-host-diag:ro
   runner:
     image: crew-dev-runner:local
     restart: unless-stopped

@@ -10,3 +10,4 @@ audit
 **/node_modules
 **/.pytest_cache
 /bridge-source/
+/.host-agent-venv/

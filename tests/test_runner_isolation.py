@@ -27,7 +27,8 @@ def test_compose_isolation_and_localhost_only():
     runner = yaml.split('  runner:', 1)[1]
     bridge = yaml.split('  runner:', 1)[0]
     assert 'user: "0:10001"' in runner
-    assert 'cap_add: [CHOWN, SETUID, SETGID]' in runner
+    # DAC_OVERRIDE is an existing runner-supervisor capability, not a new host grant.
+    assert 'cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]' in runner
     assert 'network_mode: none' in runner
     assert 'read_only: true' in runner
     assert 'user: "10001:10001"' in bridge
