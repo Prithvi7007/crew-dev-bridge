@@ -498,3 +498,32 @@ def test_release_plan_checks_staging_before_database(monkeypatch):
     result = release.plan()
     assert result["ok"] is False
     assert result["error"] == "staging_permission_denied:release_worktree_parent"
+
+
+def test_release_state_directory_owner_matches_systemd_service_group():
+    root = Path(__file__).resolve().parents[1]
+    installer = (root / "deploy/release/install.sh").read_text()
+    unit = (root / "deploy/release/crew-release.service").read_text()
+    assert "User=root" in unit and "Group=986" in unit
+    assert "StateDirectory=crew-release" in unit
+    assert "install -d -o root -g 986 -m 0755 /var/lib/crew-release" in installer
+    assert "install -d -o root -g root -m 0755 /var/lib/crew-release" not in installer
+    assert installer.index("install -d -o root -g 986 -m 0755 /var/lib/crew-release") < (
+        installer.index("install -d -o crew -g www-data -m 0750 /var/lib/crew-release/worktrees")
+    )
+    assert installer.index("install -d -o root -g 986 -m 0755 /var/lib/crew-release") < (
+        installer.index("systemctl restart crew-release.service")
+    )
+
+
+def test_release_installer_checks_staging_after_systemd_restart():
+    installer = (Path(__file__).resolve().parents[1] /
+                 "deploy/release/install.sh").read_text()
+    assert "stat -c '%u:%g' /var/lib/crew-release" in installer
+    assert "0:986" in installer
+    assert "/usr/sbin/runuser -u crew -- /usr/bin/test -w" in installer
+    assert "/usr/sbin/runuser -u crew -- /usr/bin/test -x" in installer
+    assert "for stage_dir in /var/lib/crew-release/worktrees /opt/crew/.git/worktrees" in installer
+    assert installer.index("systemctl restart crew-release.service") < installer.index(
+        "stat -c '%u:%g' /var/lib/crew-release")
+    assert "chown -R" not in installer
