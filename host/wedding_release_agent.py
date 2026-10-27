@@ -59,7 +59,7 @@ def result(ok: bool, **kwargs):
     return {"ok": ok, **kwargs}
 
 
-def run(argv, *, user=None, timeout=60, stdin=None, stdout=None):
+def run(argv, *, user=None, timeout=60, stdin=None, stdout=None, umask=None):
     """Only server-owned constant argv. No shell or inherited secrets."""
     opts = {}
     if user:
@@ -68,7 +68,7 @@ def run(argv, *, user=None, timeout=60, stdin=None, stdout=None):
     try:
         p = subprocess.run(
             list(argv), shell=False, check=False, stdin=stdin, stdout=stdout or subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=timeout, **opts,
+            stderr=subprocess.PIPE, timeout=timeout, umask=umask, **opts,
             env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8",
                  "HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
                  "GIT_CONFIG_GLOBAL": "/dev/null"},
@@ -83,8 +83,13 @@ def run(argv, *, user=None, timeout=60, stdin=None, stdout=None):
 
 
 def git(*args, timeout=60):
+    # The private release-agent umask is 077, but Git checkout must create
+    # public site assets as readable files (0644) for Nginx/www-data.
+    # Other Git operations and the agent's private files retain umask 077.
+    checkout_umask = 0o022 if args[:2] == ("reset", "--hard") else None
     return run(["git", "-c", "core.hooksPath=/dev/null",
-                "-c", "core.pager=cat", "-C", str(ROOT), *args], timeout=timeout)
+                "-c", "core.pager=cat", "-C", str(ROOT), *args],
+               timeout=timeout, umask=checkout_umask)
 
 
 def require_inactive_photo_uploads():
@@ -200,6 +205,32 @@ def allowed_changes(old: str, new: str):
     if "120000" in summary or "symlink" in summary.lower():
         raise Stop("symlink_change_requires_manual_review")
     return len(paths)
+
+
+def verify_changed_file_permissions(old: str, new: str):
+    """Reject an unreadable release before restarting the live web service.
+
+    Nginx serves public static files as an unprivileged worker. Checking only
+    /readyz would miss CSS/assets returning HTTP 403 after a root-owned reset.
+    """
+    for relative in git("diff", "--name-only", "--no-renames", old, new).splitlines():
+        path = ROOT / relative
+        if not path.exists():
+            continue  # A legitimate deletion does not need read access.
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise Stop("deployed_file_invalid")
+            if not path.stat().st_mode & stat.S_IROTH:
+                raise Stop("deployed_file_unreadable")
+            parent = path.parent
+            while True:
+                if parent.is_symlink() or not parent.stat().st_mode & stat.S_IXOTH:
+                    raise Stop("deployed_directory_unreadable")
+                if parent == ROOT:
+                    break
+                parent = parent.parent
+        except OSError as e:
+            raise Stop("deployed_file_unreadable") from e
 
 
 def health() -> bool:
@@ -351,6 +382,7 @@ def execute(job):
         # the code-only rollback path instead of leaving an uncertain state.
         changed = True
         git("reset", "--hard", sha, timeout=90)
+        verify_changed_file_permissions(previous, sha)
         run(["systemctl", "restart", SERVICE], timeout=40)
         report_phase(job, "verify")
         if not verify_readiness():
