@@ -24,6 +24,10 @@ import time
 from urllib.request import Request, urlopen
 
 ROOT = Path("/var/www/wedding-v3-101f73e")
+# The live checkout is a DETACHED linked Git worktree. Its metadata lives
+# outside ROOT; both paths must match exactly to prevent an arbitrary checkout.
+GIT_DIRECTORY = Path("/var/www/wedding/.git/worktrees/wedding-v3-101f73e")
+GIT_COMMON_DIRECTORY = Path("/var/www/wedding/.git")
 UPLOADS = ROOT / "uploads"
 SERVICE = "wedding.service"
 APP_SOCKET = Path("/run/wedding/wedding.sock")
@@ -97,13 +101,37 @@ def require_inactive_photo_uploads():
         raise Stop("photo_upload_records_require_manual_review")
 
 
-def preflight():
-    if not ROOT.is_dir() or ROOT.is_symlink() or not (ROOT / ".git").is_dir():
+def verify_detached_worktree():
+    """Require the observed production worktree, not a writable branch checkout.
+
+    HEAD is intentionally detached. We obtain the approved target from GitHub's
+    protected `main` instead of switching branches in the running checkout.
+    """
+    gitfile = ROOT / ".git"
+    if (not ROOT.is_dir() or ROOT.is_symlink() or not gitfile.is_file()
+            or gitfile.is_symlink()):
         raise Stop("invalid_checkout")
+    try:
+        marker = gitfile.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise Stop("invalid_checkout")
+    if marker.strip() != f"gitdir: {GIT_DIRECTORY}":
+        raise Stop("unexpected_worktree_metadata")
+    if (not GIT_DIRECTORY.is_dir() or GIT_DIRECTORY.is_symlink()
+            or not GIT_COMMON_DIRECTORY.is_dir() or GIT_COMMON_DIRECTORY.is_symlink()):
+        raise Stop("unexpected_worktree_metadata")
+    if (git("rev-parse", "--show-toplevel") != str(ROOT)
+            or git("rev-parse", "--absolute-git-dir") != str(GIT_DIRECTORY)
+            or git("rev-parse", "--git-common-dir") != str(GIT_COMMON_DIRECTORY)):
+        raise Stop("unexpected_worktree_metadata")
+    if git("rev-parse", "--abbrev-ref", "HEAD") != "HEAD":
+        raise Stop("expected_detached_head")
+
+
+def preflight():
+    verify_detached_worktree()
     if git("remote", "get-url", "origin") != REPO:
         raise Stop("unexpected_remote")
-    if git("symbolic-ref", "--short", "HEAD") != BASE:
-        raise Stop("unexpected_branch")
     if git("status", "--porcelain"):
         raise Stop("dirty_checkout")
     old = git("rev-parse", "HEAD")

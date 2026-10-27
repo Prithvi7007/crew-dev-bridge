@@ -29,7 +29,8 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_FOWNER
 AmbientCapabilities=CAP_SETUID CAP_SETGID
-ReadWritePaths=/var/www/wedding-v3-101f73e /var/backups/wedding /var/lib/wedding-release /run/wedding-release
+# Linked worktree git fetch/reset writes to the shared root-owned metadata.
+ReadWritePaths=/var/www/wedding-v3-101f73e /var/www/wedding/.git /var/backups/wedding /var/lib/wedding-release /run/wedding-release
 MemoryMax=350M
 TasksMax=80
 LimitNOFILE=1024

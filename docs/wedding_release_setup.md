@@ -10,7 +10,7 @@ website. It never changes the CREW release agent, CREW service or crew_prod.
 
 Wedding V3 includes guest contacts, RSVPs and admin logs. Photo uploads are not yet implemented. Unlike
 CREW's reviewed additive Alembic migration workflow, Wedding V3 includes
-manual schema scripts. CI exists on `main`, but branch protection must be enabled. This agent **refuses**
+manual schema scripts. CI now exists on the protected `main` branch. This agent **refuses**
 changes under app/models, migrations, scripts, runtime/config files,
 dependency files and GitHub workflows. Schema and dependency releases remain
 a manually reviewed process.
@@ -30,9 +30,13 @@ manual approval override.
 Before installing, independently verify these *fixed* assumptions on the
 VPS; if any are false, amend and retest the code in a NEW PR:
 
-1. Wedding code: `/var/www/wedding-v3-101f73e`, checked-out branch
-   `main`, remote URL exactly
-   `https://github.com/Prithvi7007/Wedding_Website_Final.git`.
+1. The live app is a **clean detached Git worktree** at
+   `/var/www/wedding-v3-101f73e`. Its `.git` is a *file* pointing to
+   `/var/www/wedding/.git/worktrees/wedding-v3-101f73e`; shared metadata
+   lives under `/var/www/wedding/.git`. The agent requires these exact paths
+   and detached HEAD. Do **not** check out `main` in the live worktree.
+   The approved remote release branch is GitHub `main`; `origin` must
+   equal `https://github.com/Prithvi7007/Wedding_Website_Final.git`.
 2. Service `wedding.service` serves the running app from this checkout
    without changing its existing protected EnvironmentFile/credentials.
    Restarting ONLY this service must be safe.
@@ -55,7 +59,8 @@ VPS; if any are false, amend and retest the code in a NEW PR:
    committed to `Wedding_Website_Final/.github/workflows/wedding-ci.yml`
    via GitHub UI and completed successfully on an exact `main`
    push commit. The workflow name must be exactly **Wedding V3 CI**.
-   Protect `main` with required CI, reviews, and restricted pushes.
+   The active ruleset protects `main`, requires pull requests and
+   `wedding-quality` CI, and prevents branch deletion and force pushes.
 8. The release agent must be installed outside any repository-writable
    directory, root-owned, with its own Unix socket. The bridge container
    must see only `/run/wedding-release` read-only. No Docker socket,
@@ -66,8 +71,9 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 1. GitHub branch head is obtained from the fixed public API, and an exact
    completed **successful push workflow** is mandatory; missing/failed/
    delayed/rate-limited/unavailable CI stops the release.
-2. Confirm clean `main` checkout and exact expected remote;
-   fetch the approved SHA, require fast-forward history and code-only diffs.
+2. Confirm a clean detached worktree, exact Git metadata, and expected remote.
+   Fetch the approved `main` SHA, require fast-forward history and code-only
+   diffs; do not switch the live checkout to a branch.
 3. Require existing app readiness and zero activity in the unfinished photo
    upload feature; then take a custom-format `pg_dump` of `wedding_db`
    with a SHA-256 manifest. No media archive is made until photo uploads ship.
@@ -82,6 +88,22 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 
 All releases are triggered on demand. No polling loop auto-deploys a branch.
 
+## Manual initial baseline alignment is mandatory
+
+The live detached worktree is currently at
+`9e44b6058a3673c388f75455cb2bb545ee55cb0f`. GitHub `main` now
+contains the CI workflow and workflow-branch edit. Because these are
+`.github/` changes, the code-only release agent intentionally **rejects**
+this transition. An operator must separately review and back up the live
+worktree and database, align the baseline without changing its detached
+layout or production credentials, and verify readiness. Do not bypass change
+gates or run an unreviewed `git reset --hard` against the live website.
+
+The root-owned release service also needs write access to
+`/var/www/wedding/.git` for Git objects, refs, and per-worktree metadata;
+the service unit explicitly includes that directory. Review the permissions
+and the scope of this host access before installation.
+
 ## Host installation after reviewed PRs and preflight
 
 The agent is intentionally **not** installed by merging this PR.
@@ -95,10 +117,9 @@ code-only pilot release with operator observation before routine use.
 
 ## Remaining activation checks
 
-- `Wedding V3 CI` is installed on `main` and has passed; require branch protection and verify the exact target commit before activating releases.
-- The actual wedding service bind path and socket have been observed, but
-  the full root-owned systemd unit, Git remote permissions and filesystem
-  ownership must still be independently verified.
+- `Wedding V3 CI` is green on the protected `main` branch; check the exact target commit before any release.
+- The wedding service and socket have been observed. Confirm the systemd
+  unit, exact remote URL, metadata ownership and sandbox permissions on host.
 - Photo uploads are unfinished; the automated release is deliberately blocked
   when known upload persistence or new photo/upload code appears.
 - Do not bypass CI or missing preflight by changing environment flags.
