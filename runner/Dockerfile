@@ -5,6 +5,12 @@ COPY requirements.txt /tmp/crew_requirements.txt
 RUN python3 -m venv /opt/crew-venv && /opt/crew-venv/bin/pip install --no-cache-dir -r /tmp/crew_requirements.txt pytest "httpx>=0.27,<1" "mcp>=1.15,<2"
 COPY frontend/package.json frontend/package-lock.json /opt/frontend/
 RUN cd /opt/frontend && npm ci
+# Motion is provisioned at trusted image-build time only. The test worker
+# remains network-disabled and never installs packages from feature code.
+# Match the version exactly when adding motion to crew_games/package-lock.
+ARG CREW_MOTION_VERSION=14.6.0
+RUN cd /opt/frontend && npm install --no-save --no-package-lock --ignore-scripts "motion@${CREW_MOTION_VERSION}" \
+    && node -e "if (require('./node_modules/motion/package.json').version !== '${CREW_MOTION_VERSION}') process.exit(1)"
 WORKDIR /opt/worker
 COPY runner/worker.py /opt/worker/worker.py
 ENV PATH=/opt/crew-venv/bin:/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1
