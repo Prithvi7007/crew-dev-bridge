@@ -16,6 +16,7 @@ def _simulate_checkout_failure(monkeypatch, *, rollback_fails=False):
     monkeypatch.setattr(release, "ci_green", lambda candidate: candidate == target)
     monkeypatch.setattr(release, "allowed_changes", lambda a, b: 1)
     monkeypatch.setattr(release, "health", lambda: True)
+    monkeypatch.setattr(release, "verify_public_assets", lambda: None)
     monkeypatch.setattr(release, "backup", lambda job: "fake-offline-dump")
     monkeypatch.setattr(release, "rehearse", lambda dump: None)
     monkeypatch.setattr(release, "verify_readiness", lambda: True)

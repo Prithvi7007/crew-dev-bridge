@@ -14,6 +14,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 UMask=0007
 RuntimeDirectory=wedding-release
 RuntimeDirectoryMode=0770
+# The read-only Docker bridge bind-mounts this exact directory. Preserve its
+# inode across operator restarts/stops; the agent replaces the socket on start.
+# Without preservation, the bridge sees a stale, disconnected mount.
+RuntimeDirectoryPreserve=yes
 StateDirectory=wedding-release
 StateDirectoryMode=0700
 Restart=on-failure

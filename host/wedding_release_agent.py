@@ -16,6 +16,7 @@ import pwd
 import re
 import socket
 import socketserver
+import ssl
 import stat
 import struct
 import subprocess
@@ -41,6 +42,11 @@ REPO = "https://github.com/Prithvi7007/Wedding_Website_Final.git"
 API = "https://api.github.com/repos/Prithvi7007/Wedding_Website_Final"
 BASE = "main"
 CI_WORKFLOW = "Wedding V3 CI"
+STATIC_SMOKE_ASSETS = (
+    "css/tokens.css", "css/shell.css", "css/information.css",
+    "js/app.js", "images/favicon.png",
+    "images/slideshow/DSC06660-1170.webp",
+)
 BRIDGE_UID = 10001
 HEX = re.compile(r"[0-9a-f]{40}\Z")
 OPS = frozenset({"capabilities", "plan", "start", "status"})
@@ -337,6 +343,55 @@ def rehearse(dump: Path):
         postgres(["dropdb", "--if-exists", SCRATCH_DB], timeout=60)
 
 
+def _local_https_static_asset(relative: str, fingerprint: str) -> bytes:
+    """Read public bytes via local Nginx with TLS SNI and certificate checks.
+
+    A successful Gunicorn /readyz cannot detect Nginx returning 403 for CSS.
+    This probe never sends private invitation tokens or host credentials.
+    """
+    class LocalHTTPS(http.client.HTTPSConnection):
+        def connect(self):
+            connection = socket.create_connection(("127.0.0.1", 443), timeout=6)
+            self.sock = self._context.wrap_socket(
+                connection, server_hostname=SERVICE_HOST
+            )
+
+    connection = LocalHTTPS(
+        SERVICE_HOST, timeout=6, context=ssl.create_default_context()
+    )
+    try:
+        connection.request(
+            "GET", f"/static/{relative}?v={fingerprint}",
+            headers={"Host": SERVICE_HOST},
+        )
+        response = connection.getresponse()
+        body = response.read(2 * 1024 * 1024 + 1)
+        if response.status != 200 or len(body) > 2 * 1024 * 1024:
+            raise Stop("public_asset_http_failure")
+        return body
+    except (OSError, http.client.HTTPException, ssl.SSLError) as e:
+        raise Stop("public_asset_http_failure") from e
+    finally:
+        connection.close()
+
+
+def verify_public_assets() -> None:
+    """Fail closed when Nginx serves missing, stale or inaccessible assets."""
+    static_root = ROOT / "app/static"
+    for relative in STATIC_SMOKE_ASSETS:
+        path = static_root / relative
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise Stop("public_asset_missing")
+            content = path.read_bytes()
+        except OSError as e:
+            raise Stop("public_asset_missing") from e
+        digest = hashlib.sha256(content).hexdigest()
+        delivered = _local_https_static_asset(relative, digest[:16])
+        if hashlib.sha256(delivered).hexdigest() != digest:
+            raise Stop("public_asset_content_mismatch")
+
+
 def verify_readiness(attempts=12):
     for _ in range(attempts):
         if health():
@@ -372,6 +427,7 @@ def execute(job):
             raise Stop("no_release_changes")
         if not health():
             raise Stop("production_not_ready")
+        verify_public_assets()
         report_phase(job, "backup")
         dump = backup(job)
         report_phase(job, "scratch_restore")
@@ -389,6 +445,7 @@ def execute(job):
         report_phase(job, "verify")
         if not verify_readiness():
             raise Stop("new_version_not_ready")
+        verify_public_assets()
         deployed = git("rev-parse", "HEAD")
         if deployed != sha:
             raise Stop("deployed_sha_mismatch")
@@ -404,6 +461,7 @@ def execute(job):
                 run(["systemctl", "restart", SERVICE], timeout=40)
                 if not verify_readiness():
                     raise Stop("rollback_health_failed")
+                verify_public_assets()
                 save(result(False, job=job, state="failed", error=code,
                             rolled_back=True, backup_id=job))
                 return
