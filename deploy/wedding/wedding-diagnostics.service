@@ -1,0 +1,32 @@
+[Unit]
+Description=Wedding V3 isolated aggregate-only database diagnostics
+After=postgresql.service
+ConditionPathExists=/usr/local/lib/wedding-diagnostics/agent.py
+
+[Service]
+Type=simple
+User=weddingdiag
+Group=986
+ExecStart=/opt/wedding-diagnostics-venv/bin/python /usr/local/lib/wedding-diagnostics/agent.py
+RuntimeDirectory=wedding-diagnostics
+RuntimeDirectoryMode=0770
+LoadCredential=report_dsn:/etc/wedding-diagnostics/report_dsn
+UMask=0007
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/wedding-diagnostics
+CapabilityBoundingSet=
+MemoryMax=150M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
