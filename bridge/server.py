@@ -55,7 +55,7 @@ def crew_apply_patch(patch: str, repository: str = 'crew_games') -> dict:
 
 @mcp.tool()
 def crew_start_check(kind: str, repository: str = 'crew_games') -> dict:
-    """Queue either pytest or react_build in the separate offline sandbox (no arbitrary shell)."""
+    """Queue repository-specific allowlisted checks in the offline sandbox (no arbitrary shell)."""
     with core.repository_context(repository):
         return core.start_check(kind)
 
@@ -74,13 +74,13 @@ def crew_sync_frontend_assets(job_id: str, repository: str = 'crew_games') -> di
 
 @mcp.tool()
 def crew_commit_and_push(message: str, repository: str = 'crew_games') -> dict:
-    """Create a commit via GitHub API on feature/* only, requiring passing pytest and React build. Never pushes main."""
+    """Commit feature/* through GitHub after repository-specific checks pass. Never pushes a release branch."""
     with core.repository_context(repository):
         return core.commit_and_push(message)
 
 @mcp.tool()
 def crew_open_draft_pr(title: str, description: str, repository: str = 'crew_games') -> dict:
-    """Create a draft GitHub PR from feature/* into main. No merging or deployment capability."""
+    """Create a draft PR from feature/* into the repository's approved base. No merging or deployment capability."""
     with core.repository_context(repository):
         return core.open_draft_pr(title, description)
 
