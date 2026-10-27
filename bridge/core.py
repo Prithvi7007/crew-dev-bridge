@@ -156,7 +156,7 @@ def fingerprint() -> str:
         target = safe_path(p)
         digest.update(p.encode() + b'\0')
         if target.is_file():
-            if target.stat().st_size > MAX_FILE:
+            if target.stat().st_size > max_file_size(p):
                 raise BridgeError('Oversized file: ' + p)
             digest.update(target.read_bytes())
         else:
