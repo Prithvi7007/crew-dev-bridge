@@ -65,10 +65,12 @@ def run(argv, *, user=None, timeout=60, stdin=None, stdout=None, umask=None):
     if user:
         ident = pwd.getpwnam(user)
         opts = {"user": ident.pw_uid, "group": ident.pw_gid, "extra_groups": []}
+    if umask is not None:
+        opts["umask"] = umask
     try:
         p = subprocess.run(
             list(argv), shell=False, check=False, stdin=stdin, stdout=stdout or subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=timeout, umask=umask, **opts,
+            stderr=subprocess.PIPE, timeout=timeout, **opts,
             env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8",
                  "HOME": "/tmp", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
                  "GIT_CONFIG_GLOBAL": "/dev/null"},
