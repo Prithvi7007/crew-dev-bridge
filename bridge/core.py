@@ -28,6 +28,13 @@ QUEUE = Path(os.environ.get('CREW_QUEUE', '/queue'))
 TOKEN_FILE = Path(os.environ.get('CREW_GITHUB_TOKEN_FILE', '/run/crew-secrets/github_token'))
 BRANCH_RE = re.compile(r'^feature/[a-z0-9][a-z0-9._/-]{1,70}$')
 MAX_FILE = 250_000
+# Only the checksum-verified compiled player entry may exceed the source-file cap.
+MAX_PLAYER_BUNDLE = 450_000
+
+
+def max_file_size(path: str) -> int:
+    return MAX_PLAYER_BUNDLE if path == 'app/static/react/player.js' else MAX_FILE
+
 MAX_CHANGES = 30
 EXCLUDED_PARTS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.ssh', '.aws', 'secrets'}
 EXCLUDED_NAMES = {'.env', '.env.local', '.env.production', 'id_rsa', 'id_ed25519', '.npmrc', '.pypirc', '.netrc'}
@@ -166,7 +173,7 @@ def status() -> dict:
 def read_file(path: str) -> dict:
     target = safe_path(path, must_exist=True)
     raw = target.read_bytes()
-    if len(raw) > MAX_FILE:
+    if len(raw) > max_file_size(path):
         raise BridgeError('File exceeds size limit')
     try:
         content = raw.decode('utf-8')
@@ -176,8 +183,8 @@ def read_file(path: str) -> dict:
 
 
 def write_file(path: str, content: str, expected_sha256: str) -> dict:
-    if not isinstance(content, str) or len(content.encode('utf-8')) > MAX_FILE:
-        raise BridgeError('Only UTF-8 text files up to 250 KB are accepted')
+    if not isinstance(content, str) or len(content.encode('utf-8')) > max_file_size(path):
+        raise BridgeError('UTF-8 source exceeds allowed size limit')
     validate_branch(branch())
     target = safe_path(path)
     with locked():
@@ -372,7 +379,7 @@ def sync_frontend_assets(job_id: str) -> dict:
         for rel in allowed:
             source = root / Path(rel).name
             st = source.lstat()
-            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE:
+            if not stat.S_ISREG(st.st_mode) or st.st_size > max_file_size(rel):
                 raise BridgeError('Unsafe or oversized build output')
             raw = source.read_bytes()
             raw.decode('utf-8')
@@ -447,7 +454,7 @@ def commit_and_push(message: str) -> dict:
         for path in paths:
             target = safe_path(path)
             if target.is_file():
-                if target.is_symlink() or target.stat().st_size > MAX_FILE:
+                if target.is_symlink() or target.stat().st_size > max_file_size(path):
                     raise BridgeError('Unsafe or oversized changed file: ' + path)
                 try:
                     content = target.read_text(encoding='utf-8')
