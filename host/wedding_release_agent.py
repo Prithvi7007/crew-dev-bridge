@@ -19,7 +19,6 @@ import socketserver
 import stat
 import struct
 import subprocess
-import tarfile
 import threading
 import time
 from urllib.request import Request, urlopen
@@ -84,6 +83,20 @@ def git(*args, timeout=60):
                 "-c", "core.pager=cat", "-C", str(ROOT), *args], timeout=timeout)
 
 
+def require_inactive_photo_uploads():
+    """Block automatic releases as soon as photo storage becomes active.
+
+    Photo upload functionality is not implemented. When it is introduced,
+    a separately reviewed backup strategy must protect persisted media.
+    """
+    if UPLOADS.is_symlink() or UPLOADS.exists():
+        raise Stop("photo_storage_requires_manual_review")
+    count = postgres(["psql", "-d", DB, "-Atqc",
+                      "SELECT COUNT(*) FROM public.photo_uploads"], timeout=20)
+    if not count.isdecimal() or int(count) != 0:
+        raise Stop("photo_upload_records_require_manual_review")
+
+
 def preflight():
     if not ROOT.is_dir() or ROOT.is_symlink() or not (ROOT / ".git").is_dir():
         raise Stop("invalid_checkout")
@@ -96,8 +109,7 @@ def preflight():
     old = git("rev-parse", "HEAD")
     if not HEX.fullmatch(old):
         raise Stop("invalid_revision")
-    if not UPLOADS.is_dir() or UPLOADS.is_symlink():
-        raise Stop("uploads_directory_not_verified")
+    require_inactive_photo_uploads()
     if not APP_SOCKET.is_socket() or APP_SOCKET.is_symlink():
         raise Stop("app_socket_not_verified")
     if not BACKUPS.is_dir() or BACKUPS.is_symlink():
@@ -149,6 +161,8 @@ def ci_green(sha: str) -> bool:
 def allowed_changes(old: str, new: str):
     paths = git("diff", "--name-only", "--no-renames", old, new).splitlines()
     for path in paths:
+        if any(part.startswith(("photo", "upload", "gallery")) for part in path.lower().split("/")):
+            raise Stop("photo_feature_changes_require_manual_review")
         if path in GATE_FILES or path.startswith(GATE_DIRS) or path.startswith(".env"):
             raise Stop("schema_or_runtime_change_requires_manual_review")
         if not re.fullmatch(r"[A-Za-z0-9_./-]+", path) or ".." in path.split("/"):
@@ -225,26 +239,21 @@ def backup(job):
     # Root-opened file descriptors prevent PostgreSQL needing filesystem access
     # to the private backup dir; its subprocess never gets the bridge token.
     dump = BACKUPS / f"{job}.dump"
-    photos = BACKUPS / f"{job}.uploads.tar.gz"
     manifest = BACKUPS / f"{job}.sha256"
-    if dump.exists() or photos.exists() or manifest.exists():
+    if dump.exists() or manifest.exists():
         raise Stop("backup_exists")
     try:
         with dump.open("xb") as fd:
             postgres(["pg_dump", "-Fc", "--dbname", DB], timeout=600, stdout=fd)
         os.chmod(dump, 0o600)
-        # Tar archives guest uploads without dereferencing symlinks.
-        with tarfile.open(photos, "x:gz", dereference=False) as archive:
-            archive.add(UPLOADS, arcname="uploads", recursive=True)
-        os.chmod(photos, 0o600)
         sha = {}
-        for item in (dump, photos):
+        for item in (dump,):
             with item.open("rb") as stream:
                 sha[item.name] = hashlib.file_digest(stream, "sha256").hexdigest()
         manifest.write_text("\n".join(f"{value}  {key}" for key, value in sha.items()) + "\n")
         os.chmod(manifest, 0o600)
         return dump
-    except (OSError, tarfile.TarError):
+    except OSError:
         raise Stop("backup_failed")
 
 

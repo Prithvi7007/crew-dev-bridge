@@ -8,7 +8,7 @@ website. It never changes the CREW release agent, CREW service or crew_prod.
 
 ## Why code-only at first
 
-Wedding V3 includes guest contacts, RSVPs, admin logs and photos. Unlike
+Wedding V3 includes guest contacts, RSVPs and admin logs. Photo uploads are not yet implemented. Unlike
 CREW's reviewed additive Alembic migration workflow, Wedding V3 includes
 manual schema scripts and no established CI workflow. This agent **refuses**
 changes under app/models, migrations, scripts, runtime/config files,
@@ -39,9 +39,12 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 3. Gunicorn serves `/readyz` on the local UNIX socket
    `/run/wedding/wedding.sock` with Host `adlinprithvi.cloud`.
    `/readyz` must return HTTP 200 and JSON `{"status":"ready"}`.
-4. Guest uploads are in the existing, non-symlinked directory
-   `/var/www/wedding-v3-101f73e/uploads`. **If uploads live elsewhere,
-   fix the backup design before enabling releases.**
+4. Photo uploads are **not implemented**. There must be no directory
+   `/var/www/wedding-v3-101f73e/uploads` and zero rows in the existing
+   `photo_uploads` database table. Both are checked on every release.
+   Any uploaded photos, new upload/gallery feature files, or upload directory
+   blocks automated releases until a new reviewed media-backup procedure ships.
+   The guard does not discover arbitrary future storage paths.
 5. PostgreSQL local peer auth permits a subprocess running as `postgres`
    to perform `pg_dump`, `createdb`, `pg_restore`, and `dropdb`.
    The fixed scratch database `wedding_release_verify` must not exist.
@@ -65,8 +68,9 @@ VPS; if any are false, amend and retest the code in a NEW PR:
    delayed/rate-limited/unavailable CI stops the release.
 2. Confirm clean `v3-production` checkout and exact expected remote;
    fetch the approved SHA, require fast-forward history and code-only diffs.
-3. Require existing app readiness, archive guest uploads and take a
-   custom-format `pg_dump` of `wedding_db` with SHA-256 manifest.
+3. Require existing app readiness and zero activity in the unfinished photo
+   upload feature; then take a custom-format `pg_dump` of `wedding_db`
+   with a SHA-256 manifest. No media archive is made until photo uploads ship.
 4. Restore the backup to the uniquely named **scratch database only** and
    validate the `invitations` table before deleting scratch.
 5. Recheck the target SHA and CI, then update the clean app checkout.
@@ -92,8 +96,11 @@ code-only pilot release with operator observation before routine use.
 ## Known blockers at initial submission
 
 - `Wedding V3 CI` does not yet exist in `v3-production`; releases fail closed.
-- Actual wedding service bind path and upload storage path have not been
-  independently verified from the root-owned unit and filesystem.
+- The actual wedding service bind path and socket have been observed, but
+  the full root-owned systemd unit, Git remote permissions and filesystem
+  ownership must still be independently verified.
+- Photo uploads are unfinished; the automated release is deliberately blocked
+  when known upload persistence or new photo/upload code appears.
 - Do not bypass CI or missing preflight by changing environment flags.
 - This release agent has no schema migration rights by design.
 
