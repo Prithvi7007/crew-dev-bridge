@@ -40,6 +40,7 @@ services:
       - /run/crew-host-diag:/run/crew-host-diag:ro
       - /run/wedding-diagnostics:/run/wedding-diagnostics:ro
       - /run/crew-release:/run/crew-release:ro
+      - /run/wedding-release:/run/wedding-release:ro
   runner:
     image: crew-dev-runner:local
     restart: unless-stopped

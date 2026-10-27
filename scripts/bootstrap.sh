@@ -26,7 +26,7 @@ if [ -e wedding-source ] && [ ! -d wedding-source/.git ]; then
   exit 1
 fi
 if [ ! -d wedding-source/.git ]; then
-  git clone --no-tags --branch v3-production https://github.com/Prithvi7007/Wedding_Website_Final.git wedding-source
+  git clone --no-tags --branch main https://github.com/Prithvi7007/Wedding_Website_Final.git wedding-source
 fi
 if [ ! -f secrets/wedding_github_token ]; then
   echo 'Create a fine-grained GitHub token scoped ONLY to Prithvi7007/Wedding_Website_Final.'

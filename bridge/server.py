@@ -8,6 +8,7 @@ from . import production_status
 from . import host_gateway
 from . import release_gateway
 from . import wedding_reporting_gateway
+from . import wedding_release_gateway
 
 # Shared queue objects must never be world-readable or world-writable.
 os.umask(0o007)
@@ -210,6 +211,30 @@ def crew_vps_exec(command: str, args: list[str] | None = None) -> dict:
     Requires the separately deployed unprivileged host diagnostics gateway.
     """
     return host_gateway.vps_exec(command, args)
+
+
+@mcp.tool()
+def wedding_release_capabilities() -> dict:
+    """Check the separately installed Wedding V3 code-only release agent."""
+    return wedding_release_gateway.call('capabilities')
+
+
+@mcp.tool()
+def wedding_release_plan() -> dict:
+    """Read pinned wedding release preflight and required CI gate."""
+    return wedding_release_gateway.call('plan')
+
+
+@mcp.tool()
+def wedding_release_execute() -> dict:
+    """Request independently verified Wedding V3 code-only release."""
+    return wedding_release_gateway.call('start')
+
+
+@mcp.tool()
+def wedding_release_status() -> dict:
+    """Read the wedding release job state and sanitized result."""
+    return wedding_release_gateway.call('status')
 
 
 # BEGIN REUSABLE CREW RELEASE: operations are authorized by a root-owned
