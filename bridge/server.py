@@ -7,6 +7,7 @@ from . import core
 from . import production_status
 from . import host_gateway
 from . import release_gateway
+from . import wedding_reporting_gateway
 
 # Shared queue objects must never be world-readable or world-writable.
 os.umask(0o007)
@@ -193,6 +194,12 @@ def crew_db_query(sql: str, params: list | None = None, limit: int = 50) -> dict
     reporting-only database account. Never has direct DB access in the MCP container.
     """
     return host_gateway.db_query(sql, params, limit)
+
+
+@mcp.tool()
+def wedding_db_report(report: str = 'overview') -> dict:
+    """Return fixed privacy-safe aggregate reporting for wedding_db; no arbitrary SQL."""
+    return wedding_reporting_gateway.call(report)
 
 
 @mcp.tool()
