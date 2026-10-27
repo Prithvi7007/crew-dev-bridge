@@ -1,0 +1,38 @@
+[Unit]
+Description=Wedding V3 separately approved code-only release agent
+After=network-online.target postgresql.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/lib/wedding-release/release_agent.py
+
+[Service]
+Type=simple
+User=root
+Group=986
+WorkingDirectory=/var/lib/wedding-release
+ExecStart=/usr/bin/python3 /usr/local/lib/wedding-release/release_agent.py
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0007
+RuntimeDirectory=wedding-release
+RuntimeDirectoryMode=0770
+StateDirectory=wedding-release
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+ReadWritePaths=/var/www/wedding-v3-101f73e /var/backups/wedding /var/lib/wedding-release /run/wedding-release
+MemoryMax=350M
+TasksMax=80
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

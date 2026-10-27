@@ -1,0 +1,31 @@
+# Copy through a reviewed GitHub UI PR to:
+# Prithvi7007/Wedding_Website_Final/.github/workflows/wedding-ci.yml
+# The development bridge deliberately blocks edits to workflow paths.
+name: Wedding V3 CI
+
+on:
+  pull_request:
+    branches: [v3-production]
+  push:
+    branches: [v3-production]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: wedding-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Python syntax
+        run: python -m compileall -q app tests wsgi.py
+      - name: Unit tests (isolated SQLite fixtures, no production secrets)
+        run: python -m pytest -q -p no:cacheprovider
