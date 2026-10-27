@@ -11,6 +11,9 @@ import time
 
 QUEUE = Path('/queue')
 ALLOWED = {'pytest', 'react_build', 'bridge_syntax'}
+# Bound the one compiled JS entry, not general source files or other assets.
+FRONTEND_ARTIFACT_MAX = {'app/static/react/player.js': 450_000,
+                         'app/static/react/player.css': 250_000}
 TEST_UID = 10002
 TEST_GID = 10002
 
@@ -109,11 +112,11 @@ def execute(ticket: dict) -> dict:
                 for rel in allowed:
                     path = working / rel
                     st = path.lstat()
-                    if not stat.S_ISREG(st.st_mode) or st.st_size > 250_000:
+                    if not stat.S_ISREG(st.st_mode) or st.st_size > FRONTEND_ARTIFACT_MAX[rel]:
                         raise ValueError('Unsafe or oversized frontend artifact')
                     raw = path.read_bytes()
                     raw.decode('utf-8')
-                    if len(raw) > 250_000:
+                    if len(raw) > FRONTEND_ARTIFACT_MAX[rel]:
                         raise ValueError('Oversized frontend artifact')
                     dest = export_root / Path(rel).name
                     dest.write_bytes(raw)
