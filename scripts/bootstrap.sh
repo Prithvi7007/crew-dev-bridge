@@ -21,22 +21,38 @@ fi
 if [ ! -d source/.git ]; then
   git clone --no-tags --branch main https://github.com/Prithvi7007/crew_games.git source
 fi
+if [ -e wedding-source ] && [ ! -d wedding-source/.git ]; then
+  echo 'wedding-source/ exists but is not a Git checkout; refusing to overwrite.' >&2
+  exit 1
+fi
+if [ ! -d wedding-source/.git ]; then
+  git clone --no-tags --branch v3-production https://github.com/Prithvi7007/Wedding_Website_Final.git wedding-source
+fi
+if [ ! -f secrets/wedding_github_token ]; then
+  echo 'Create a fine-grained GitHub token scoped ONLY to Prithvi7007/Wedding_Website_Final.'
+  echo 'Repository permissions: Contents read/write; Pull requests read/write; Metadata read.'
+  read -r -s -p 'Wedding repository token (input hidden): ' wedding_token; echo
+  if [ -z "$wedding_token" ]; then echo 'Missing wedding token' >&2; exit 1; fi
+  (umask 077; printf '%s\n' "$wedding_token" > secrets/wedding_github_token)
+  unset wedding_token
+fi
 # The runner image is built ONLY at setup/rebuild; it does not have production mounts.
 # Use a temporary combined Docker build context for the pinned repo dependencies and worker.
 mkdir -p .runner-context
 cp source/requirements.txt .runner-context/requirements.txt
+cp wedding-source/requirements.txt .runner-context/wedding-requirements.txt
 mkdir -p .runner-context/frontend .runner-context/runner
 cp source/frontend/package.json source/frontend/package-lock.json .runner-context/frontend/
 cp runner/worker.py .runner-context/runner/
 docker build --pull -t crew-dev-runner:local -f runner/Dockerfile .runner-context
 rm -rf .runner-context
-chown -R 10001:10001 source queue secrets audit
+chown -R 10001:10001 source wedding-source queue secrets audit
 chmod 0700 secrets audit
 # The bridge (10001:10001) and runner supervisor (0:10001) share
 # a group-private queue; test subprocesses (10002:10002) cannot enter.
 chmod 2770 queue queue/jobs queue/results queue/snapshots
 chmod -R g+rwX queue
-chmod 0600 secrets/github_token
+chmod 0600 secrets/github_token secrets/wedding_github_token
 docker compose up -d --build
 printf '\nLocal MCP endpoint: http://127.0.0.1:8777/mcp\n'
 printf 'NEXT: configure a Secure MCP Tunnel; do not publicly expose this port.\n'

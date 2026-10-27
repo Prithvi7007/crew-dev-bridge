@@ -1,6 +1,6 @@
 # CREW Development Bridge — Version 0.2 (private pilot)
 
-A private MCP development bridge for `Prithvi7007/crew_games` and `Prithvi7007/crew-dev-bridge`.
+A private MCP development bridge for `Prithvi7007/crew_games`, `Prithvi7007/crew-dev-bridge`, and `Prithvi7007/Wedding_Website_Final`. See [the wedding integration guide](docs/wedding_bridge.md).
 
 > **2026 reusable release extension:** The development source workflow now includes a
 > separately installed, zero-argument production release agent for merged CREW
@@ -55,7 +55,7 @@ resource-server authorization before use.
 
 ### Restrictions
 
-- Fixed repo only: `Prithvi7007/crew_games`; fixed base branch: `main`.
+- Fixed, allowlisted repositories only: CREW, the development bridge, and Wedding V3. CREW/bridge target `main`; Wedding V3 targets `v3-production`.
 - All writes require an active `feature/*` branch.
 - Never merges PRs or deploys production.
 - No arbitrary shell command execution or arbitrary network destinations.

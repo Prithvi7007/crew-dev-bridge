@@ -23,9 +23,12 @@ REPO = os.environ.get('CREW_REPO', 'Prithvi7007/crew_games')
 WORKSPACE = Path(os.environ.get('CREW_WORKSPACE', '/workspace'))
 BRIDGE_WORKSPACE = Path(os.environ.get('CREW_BRIDGE_WORKSPACE', '/bridge-source'))
 BRIDGE_REPO = 'Prithvi7007/crew-dev-bridge'
+WEDDING_REPO = 'Prithvi7007/Wedding_Website_Final'
+WEDDING_WORKSPACE = Path(os.environ.get('WEDDING_WORKSPACE', '/wedding-source'))
 _ACTIVE_REPOSITORY = ContextVar('crew_active_repository', default='crew_games')
 QUEUE = Path(os.environ.get('CREW_QUEUE', '/queue'))
 TOKEN_FILE = Path(os.environ.get('CREW_GITHUB_TOKEN_FILE', '/run/crew-secrets/github_token'))
+WEDDING_TOKEN_FILE = Path(os.environ.get('WEDDING_GITHUB_TOKEN_FILE', '/run/crew-secrets/wedding_github_token'))
 BRANCH_RE = re.compile(r'^feature/[a-z0-9][a-z0-9._/-]{1,70}$')
 MAX_FILE = 250_000
 # Only the checksum-verified compiled player entry may exceed the source-file cap.
@@ -48,7 +51,7 @@ class BridgeError(Exception):
 @contextmanager
 def repository_context(repository: str = 'crew_games'):
     """Select only the fixed repositories, isolated per request/thread."""
-    if repository not in ('crew_games', 'crew-dev-bridge'):
+    if repository not in ('crew_games', 'crew-dev-bridge', 'wedding'):
         raise BridgeError('Unsupported repository')
     token = _ACTIVE_REPOSITORY.set(repository)
     try:
@@ -58,11 +61,17 @@ def repository_context(repository: str = 'crew_games'):
 
 
 def _repo() -> str:
-    return REPO if _ACTIVE_REPOSITORY.get() == 'crew_games' else BRIDGE_REPO
+    selected = _ACTIVE_REPOSITORY.get()
+    return {'crew_games': REPO, 'crew-dev-bridge': BRIDGE_REPO, 'wedding': WEDDING_REPO}[selected]
 
 
 def _workspace() -> Path:
-    return WORKSPACE if _ACTIVE_REPOSITORY.get() == 'crew_games' else BRIDGE_WORKSPACE
+    selected = _ACTIVE_REPOSITORY.get()
+    return {'crew_games': WORKSPACE, 'crew-dev-bridge': BRIDGE_WORKSPACE, 'wedding': WEDDING_WORKSPACE}[selected]
+
+
+def _base_branch() -> str:
+    return 'v3-production' if _ACTIVE_REPOSITORY.get() == 'wedding' else 'main'
 
 
 def audit(event: str, **details) -> None:
@@ -217,9 +226,10 @@ def diff() -> dict:
 
 
 def github_request(method: str, endpoint: str, payload: dict | None = None) -> dict:
-    if not TOKEN_FILE.is_file():
+    token_file = WEDDING_TOKEN_FILE if _ACTIVE_REPOSITORY.get() == 'wedding' else TOKEN_FILE
+    if not token_file.is_file():
         raise BridgeError('GitHub credential not provisioned: add repository-scoped token')
-    token = TOKEN_FILE.read_text().strip()
+    token = token_file.read_text().strip()
     if not token:
         raise BridgeError('GitHub credential is empty')
     # Endpoint supplied only by server-owned code, never user input.
@@ -242,8 +252,8 @@ def create_branch(name: str) -> dict:
     with locked():
         if changed_paths():
             raise BridgeError('Workspace has uncommitted changes')
-        main = github_request('GET', 'git/ref/heads/main')
-        sha = main['object']['sha']
+        base = github_request('GET', 'git/ref/heads/' + _base_branch())
+        sha = base['object']['sha']
         github_request('POST', 'git/refs', {'ref': f'refs/heads/{name}', 'sha': sha})
         # Only fetch public branch content; authentication is not passed to git.
         _git('fetch', '--no-tags', 'origin', f'refs/heads/{name}', timeout=60)
@@ -293,7 +303,10 @@ def _snapshot(target: Path) -> None:
 
 
 def start_check(kind: str) -> dict:
-    allowed = ('pytest', 'react_build') if _ACTIVE_REPOSITORY.get() == 'crew_games' else ('pytest', 'bridge_syntax')
+    checks = {'crew_games': ('pytest', 'react_build'),
+              'crew-dev-bridge': ('pytest', 'bridge_syntax'),
+              'wedding': ('pytest', 'wedding_syntax')}
+    allowed = checks[_ACTIVE_REPOSITORY.get()]
     if kind not in allowed:
         raise BridgeError('Unsupported check kind for selected repository')
     with locked():
@@ -438,12 +451,14 @@ def commit_and_push(message: str) -> dict:
         if not paths:
             raise BridgeError('There are no changes to commit')
         current = fingerprint()
-        second_check = 'react_build' if _ACTIVE_REPOSITORY.get() == 'crew_games' else 'bridge_syntax'
+        second_check = {'crew_games': 'react_build',
+                        'crew-dev-bridge': 'bridge_syntax',
+                        'wedding': 'wedding_syntax'}[_ACTIVE_REPOSITORY.get()]
         if not _check_passed('pytest', current) or not _check_passed(second_check, current):
             raise BridgeError(
                 'Both pytest and react_build must pass for the current changes'
                 if _ACTIVE_REPOSITORY.get() == 'crew_games'
-                else 'Both pytest and bridge_syntax must pass for the current changes'
+                else f'Both pytest and {second_check} must pass for the current changes'
             )
         local_sha = _git('rev-parse', 'HEAD')
         remote = github_request('GET', 'git/ref/heads/' + active)
@@ -488,6 +503,6 @@ def open_draft_pr(title: str, description: str) -> dict:
         if changed_paths():
             raise BridgeError('Commit changes before opening a PR')
         pr = github_request('POST', 'pulls', {'title': title, 'body': description, 'head': active,
-                                                'base': 'main', 'draft': True, 'maintainer_can_modify': True})
+                                                'base': _base_branch(), 'draft': True, 'maintainer_can_modify': True})
         audit('create_pr', branch=active, pr_number=pr['number'])
         return {'number': pr['number'], 'url': pr['html_url'], 'draft': True}

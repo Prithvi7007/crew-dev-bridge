@@ -19,6 +19,8 @@ services:
       CREW_REPO: Prithvi7007/crew_games
       CREW_WORKSPACE: /workspace
       CREW_BRIDGE_WORKSPACE: /bridge-source
+      WEDDING_WORKSPACE: /wedding-source
+      WEDDING_GITHUB_TOKEN_FILE: /run/crew-secrets/wedding_github_token
       CREW_QUEUE: /queue
       CREW_AUDIT: /audit/events.jsonl
       CREW_GITHUB_TOKEN_FILE: /run/crew-secrets/github_token
@@ -27,6 +29,7 @@ services:
     volumes:
       - ./source:/workspace:rw
       - ./bridge-source:/bridge-source:rw
+      - ./wedding-source:/wedding-source:rw
       - ./queue:/queue:rw
       - ./secrets:/run/crew-secrets:ro
       - ./audit:/audit:rw
