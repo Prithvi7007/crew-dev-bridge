@@ -71,7 +71,7 @@ def _workspace() -> Path:
 
 
 def _base_branch() -> str:
-    return 'v3-production' if _ACTIVE_REPOSITORY.get() == 'wedding' else 'main'
+    return 'main'
 
 
 def audit(event: str, **details) -> None:

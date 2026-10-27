@@ -10,7 +10,7 @@ website. It never changes the CREW release agent, CREW service or crew_prod.
 
 Wedding V3 includes guest contacts, RSVPs and admin logs. Photo uploads are not yet implemented. Unlike
 CREW's reviewed additive Alembic migration workflow, Wedding V3 includes
-manual schema scripts and no established CI workflow. This agent **refuses**
+manual schema scripts. CI exists on `main`, but branch protection must be enabled. This agent **refuses**
 changes under app/models, migrations, scripts, runtime/config files,
 dependency files and GitHub workflows. Schema and dependency releases remain
 a manually reviewed process.
@@ -31,7 +31,7 @@ Before installing, independently verify these *fixed* assumptions on the
 VPS; if any are false, amend and retest the code in a NEW PR:
 
 1. Wedding code: `/var/www/wedding-v3-101f73e`, checked-out branch
-   `v3-production`, remote URL exactly
+   `main`, remote URL exactly
    `https://github.com/Prithvi7007/Wedding_Website_Final.git`.
 2. Service `wedding.service` serves the running app from this checkout
    without changing its existing protected EnvironmentFile/credentials.
@@ -53,9 +53,9 @@ VPS; if any are false, amend and retest the code in a NEW PR:
    Verify disk capacity and retention separately.
 7. The manually reviewed `deploy/wedding/wedding-ci.example.yml` has been
    committed to `Wedding_Website_Final/.github/workflows/wedding-ci.yml`
-   via GitHub UI and completed successfully on an exact `v3-production`
+   via GitHub UI and completed successfully on an exact `main`
    push commit. The workflow name must be exactly **Wedding V3 CI**.
-   Protect `v3-production` with required CI, reviews, and restricted pushes.
+   Protect `main` with required CI, reviews, and restricted pushes.
 8. The release agent must be installed outside any repository-writable
    directory, root-owned, with its own Unix socket. The bridge container
    must see only `/run/wedding-release` read-only. No Docker socket,
@@ -66,7 +66,7 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 1. GitHub branch head is obtained from the fixed public API, and an exact
    completed **successful push workflow** is mandatory; missing/failed/
    delayed/rate-limited/unavailable CI stops the release.
-2. Confirm clean `v3-production` checkout and exact expected remote;
+2. Confirm clean `main` checkout and exact expected remote;
    fetch the approved SHA, require fast-forward history and code-only diffs.
 3. Require existing app readiness and zero activity in the unfinished photo
    upload feature; then take a custom-format `pg_dump` of `wedding_db`
@@ -93,9 +93,9 @@ bridge container *after* creating the host socket directory; verify plan
 is read-only and refuses release before CI exists. Always test a reversible,
 code-only pilot release with operator observation before routine use.
 
-## Known blockers at initial submission
+## Remaining activation checks
 
-- `Wedding V3 CI` does not yet exist in `v3-production`; releases fail closed.
+- `Wedding V3 CI` is installed on `main` and has passed; require branch protection and verify the exact target commit before activating releases.
 - The actual wedding service bind path and socket have been observed, but
   the full root-owned systemd unit, Git remote permissions and filesystem
   ownership must still be independently verified.

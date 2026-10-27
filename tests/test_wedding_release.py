@@ -23,7 +23,7 @@ def test_server_does_not_accept_commit_database_path_or_flags():
     ):
         assert release.dispatch(request)["error"] == "operation_not_allowed"
     caps = release.dispatch({"operation": "capabilities"})
-    assert caps["ok"] and caps["target"] == "v3-production"
+    assert caps["ok"] and caps["target"] == "main"
     assert caps["migration_policy"] == "code_only"
 
 
@@ -59,4 +59,4 @@ def test_no_automatic_db_restoration_or_deploy_arguments():
     assert release.DB == "wedding_db"
     assert release.SCRATCH_DB != release.DB
     assert release.SERVICE == "wedding.service"
-    assert release.BASE == "v3-production"
+    assert release.BASE == "main"

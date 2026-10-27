@@ -1,7 +1,7 @@
 # Wedding V3 development bridge target
 
 This change enables **development-only** access to `Prithvi7007/Wedding_Website_Final`,
-with base branch `v3-production`. It does not grant wedding production release,
+with base branch `main`. It does not grant wedding production release,
 PostgreSQL access, systemd control, or unrestricted VPS commands.
 
 ## Separation guarantees
@@ -10,7 +10,7 @@ PostgreSQL access, systemd control, or unrestricted VPS commands.
 - Separate `wedding-source/` checkout and `secrets/wedding_github_token` (never commit).
 - Separate offline Python test environment in the runner.
 - Wedding checks: `pytest` and `wedding_syntax`; both required before a GitHub push.
-- Draft PRs target `v3-production`, not the legacy `main` branch.
+- Draft PRs target `main`, the canonical development and release branch.
 - No changes to CREW release infrastructure, database, or systemd services.
 
 ## Controlled host activation

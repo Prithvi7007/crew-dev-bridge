@@ -1,13 +1,13 @@
-# Copy through a reviewed GitHub UI PR to:
+# Reference copy of the workflow installed on:
 # Prithvi7007/Wedding_Website_Final/.github/workflows/wedding-ci.yml
-# The development bridge deliberately blocks edits to workflow paths.
+# The development bridge deliberately blocks direct edits to workflow paths.
 name: Wedding V3 CI
 
 on:
   pull_request:
-    branches: [v3-production]
+    branches: [main]
   push:
-    branches: [v3-production]
+    branches: [main]
 
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt

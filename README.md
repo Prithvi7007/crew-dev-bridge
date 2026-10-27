@@ -55,7 +55,7 @@ resource-server authorization before use.
 
 ### Restrictions
 
-- Fixed, allowlisted repositories only: CREW, the development bridge, and Wedding V3. CREW/bridge target `main`; Wedding V3 targets `v3-production`.
+- Fixed, allowlisted repositories only: CREW, the development bridge, and Wedding V3. all three repositories target `main`.
 - All writes require an active `feature/*` branch.
 - Never merges PRs or deploys production.
 - No arbitrary shell command execution or arbitrary network destinations.

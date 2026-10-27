@@ -22,13 +22,13 @@ def test_ci_green_requires_exact_branch_commit_workflow_event_and_success(monkey
     sha = "a" * 40
     valid = {
         "name": "Wedding V3 CI", "head_sha": sha,
-        "head_branch": "v3-production", "event": "push",
+        "head_branch": "main", "event": "push",
         "status": "completed", "conclusion": "success",
     }
     for name, value in [
         ("name", "other"),
         ("head_sha", "b" * 40),
-        ("head_branch", "main"),
+        ("head_branch", "v3-production"),
         ("event", "pull_request"),
         ("status", "in_progress"),
         ("conclusion", "failure"),

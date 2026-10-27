@@ -11,7 +11,7 @@ def test_wedding_repo_isolation(tmp_path, monkeypatch):
     with core.repository_context('wedding'):
         assert core._repo() == 'Prithvi7007/Wedding_Website_Final'
         assert core._workspace() == tmp_path / 'wedding-source'
-        assert core._base_branch() == 'v3-production'
+        assert core._base_branch() == 'main'
     with core.repository_context('crew_games'):
         assert core._base_branch() == 'main'
     with core.repository_context('crew-dev-bridge'):
@@ -26,4 +26,4 @@ def test_wedding_credential_is_separate(tmp_path, monkeypatch):
     monkeypatch.setattr(core, 'WEDDING_TOKEN_FILE', tmp_path / 'wedding_token')
     with core.repository_context('wedding'):
         with pytest.raises(core.BridgeError, match='credential not provisioned'):
-            core.github_request('GET', 'git/ref/heads/v3-production')
+            core.github_request('GET', 'git/ref/heads/main')

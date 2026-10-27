@@ -53,7 +53,11 @@ def test_gateway_peer_credential_check(monkeypatch, tmp_path):
         try:
             assert gateway.call("overview")["ok"]
             monkeypatch.setattr(agent, "BRIDGE_UID", os.getuid() + 1)
-            assert gateway.call("overview")["error"] == "peer_not_authorized"
+            denied = gateway.call("overview")
+            # Linux may reset a socket closed with unread request data.
+            # Both outcomes must deny access without returning report data.
+            assert denied["ok"] is False
+            assert denied["error"] in {"peer_not_authorized", "wedding_diagnostics_unavailable"}
         finally:
             srv.shutdown()
             thread.join(timeout=5)
