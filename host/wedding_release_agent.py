@@ -346,8 +346,11 @@ def execute(job):
         if not ci_green(sha) or target() != sha:
             raise Stop("quality_gate_changed")
         report_phase(job, "deploy")
-        git("reset", "--hard", sha, timeout=90)
+        # A failed git reset can leave a partially updated worktree. Mark the
+        # transition as begun BEFORE attempting it, so every failure enters
+        # the code-only rollback path instead of leaving an uncertain state.
         changed = True
+        git("reset", "--hard", sha, timeout=90)
         run(["systemctl", "restart", SERVICE], timeout=40)
         report_phase(job, "verify")
         if not verify_readiness():
