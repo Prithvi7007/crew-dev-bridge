@@ -129,6 +129,36 @@ def rea_vault_info(filename: str) -> dict:
 
 
 @mcp.tool()
+def rea_vault_entries(filename: str, expected_sha256: str,
+                      offset: int = 0, limit: int = 10) -> dict:
+    """Read a bounded page of entries from a SHA-256-verified vault archive.
+
+    Limit is 1-25 rows; offset is 0-1000000. Re-inspects the file and reads
+    retained inventory in one session. Preserves coverage and Evidence IDs.
+    Oversized pages shrink without cutting JSON; one oversized row fails.
+    Target-derived paths and metadata are untrusted. No extraction or execution.
+    """
+    return rea_gateway.call("vault_entries", filename=filename,
+                            expected_sha256=expected_sha256, offset=offset, limit=limit)
+
+
+@mcp.tool()
+def rea_vault_evidence(filename: str, expected_sha256: str,
+                       collection: str = "nodes", offset: int = 0,
+                       limit: int = 10) -> dict:
+    """Read bounded artifact-graph Evidence for a SHA-256-verified vault file.
+
+    Collection is nodes, edges, or integrity_contradictions. Limit is 1-25;
+    offset is 0-1000000. Re-inspects in one session; returns selected metadata
+    with source coverage, limitations, parent identity and the next offset.
+    No arbitrary evidence source, raw file contents, extraction or execution.
+    """
+    return rea_gateway.call("vault_evidence", filename=filename,
+                            expected_sha256=expected_sha256, collection=collection,
+                            offset=offset, limit=limit)
+
+
+@mcp.tool()
 def rea_vault_upload_begin(filename: str, size: int, sha256: str) -> dict:
     """Begin resumable, SHA-256-checked upload to the REA-only vault (max 512 MiB)."""
     return rea_gateway.call("vault_begin", filename=filename, size=size, sha256=sha256)
