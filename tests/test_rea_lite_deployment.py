@@ -28,6 +28,7 @@ def test_rea_service_is_separate_and_loopback_only():
     assert "      - rea_access" in ingress_block
     assert "      - rea_isolated" in ingress_block
     assert "nginx-unprivileged:1.31.7-alpine3.24" in ingress_block
+    assert 'REA_MCP_MAX_RESPONSE_BYTES: "10485760"' in rea_block
     assert "./nginx.conf:/etc/nginx/conf.d/default.conf:ro" in ingress_block
     assert "read_only: true" in ingress_block
     assert "internal: true" in manifest
@@ -48,6 +49,8 @@ def test_rea_image_pins_runtime_and_reduces_tool_catalog():
     assert "rea-agents@6.8.0" in dockerfile
     assert "USER node" in dockerfile
     assert "REA_MCP_TOOL_FAMILIES=artifact,managed,application,session" in dockerfile
+    assert "REA_MCP_MAX_RESPONSE_BYTES=10485760" in dockerfile
+    assert "REA_MCP_MAX_RESPONSE_BYTES=1048576 \\" not in dockerfile
     assert 'CMD ["rea","mcp","--http"' in dockerfile
 
 
@@ -120,3 +123,30 @@ def test_repair_fails_closed_and_does_not_replace_rea():
     assert "proxy_pass http://rea:18765;" in nginx
     assert "proxy_buffering off;" in nginx
     assert "location /" in nginx
+
+
+def test_response_limit_repair_reuses_existing_image_and_keeps_evidence():
+    repair = (ROOT / "scripts" / "repair-response-limit.sh").read_text()
+    assert 'PREVIOUS_MERGE="64e6a3a345905e3cb3d4cb348d67124b36372ecb"' in repair
+    assert 'cmp -s - "$DEST/$name"' in repair
+    assert '[[ "$EUID" == 0 ]]' in repair
+    assert '[[ ! -e "$DEST/$name.before-response-limit"' in repair
+    assert "docker compose config --quiet" in repair
+    assert "docker compose up -d --no-deps --force-recreate rea" in repair
+    assert "docker compose restart ingress" in repair
+    assert "docker compose build" not in repair
+    assert "docker compose down" not in repair
+    assert "docker compose down -v" not in repair
+    assert "scripts/smoke_test.py --retries 12" in repair
+
+
+def test_smoke_reports_connection_reset_without_traceback(monkeypatch, capsys):
+    smoke = load_smoke()
+
+    def fail():
+        raise ConnectionResetError(104, "connection reset by peer")
+
+    monkeypatch.setattr(smoke, "verify", fail)
+    monkeypatch.setattr("sys.argv", ["smoke_test.py"])
+    assert smoke.main() == 1
+    assert "ConnectionResetError" in capsys.readouterr().err

@@ -44,6 +44,25 @@ sudo bash deploy/rea-lite/scripts/repair-ingress.sh
 
 The repair checks the original v1 Compose file against the reviewed merge commit and refuses modified/unexpected files, other processes using TCP 18765, or an existing ingress. It copies the new Compose and Nginx configuration into the separate root-owned `/opt/rea-lite`, starts only the ingress service, and runs the MCP handshake. It does not recreate the original REA container or modify unrelated services. On failure, collect `docker compose ps -a` and `docker compose logs --tail=80 rea ingress` from `/opt/rea-lite` for diagnosis. This networking issue is likely but not proven until live logs and a smoke test are available.
 
+## Repair a REA container repeatedly restarting because the response limit is too low
+
+Live REA 6.8.0 logs revealed that our v1/v2 Dockerfile set `REA_MCP_MAX_RESPONSE_BYTES=1048576` (1 MiB), but REA requires **at least 10485760 bytes** (10 MiB). The old setting makes REA exit on startup and causes the ingress to reset MCP connections. This configuration validation error is confirmed by the live container logs.
+
+The corrected Dockerfile uses 10 MiB, and Compose explicitly overrides the environment variable so that **an already-built** REA container can be fixed without rebuilding or downloading an image.
+
+**For the existing deployment (after this fix PR is merged), run:**
+
+```bash
+cd /opt/crew-dev-bridge
+git checkout main
+git pull --ff-only origin main
+sudo bash deploy/rea-lite/scripts/repair-response-limit.sh
+```
+
+The one-time repair verifies the exact reviewed v2 Compose, Dockerfile and Nginx configuration, creates local backups, copies the corrected Compose and Dockerfile, recreates **only the REA container** with the corrected environment, restarts **only the REA ingress** to clear cached REA IP addresses, and tests a real MCP handshake. No evidence volume is deleted; CREW, wedding and production Docker Compose projects remain untouched. The repair intentionally refuses unexpected configuration changes or a second application.
+
+If the smoke test still fails, inspect `cd /opt/rea-lite && docker compose ps -a && docker compose logs --tail=100 --no-color rea ingress` rather than reinstalling or deleting evidence.
+
 ## ChatGPT connection is a separate step
 
 The upstream REA HTTP endpoint has **no built-in authentication or TLS**. Do not publish TCP 18765 publicly, or connect through an unauthenticated Internet proxy. After local MCP smoke checks pass, use a private, authenticated OpenAI Secure MCP Tunnel if supported by the user's account/workspace. Follow `docs/tunnel.md` for setup and credential-handling cautions; no tunnel secrets live in this repository. An installed REA service is not the same as an active ChatGPT tool connection. REA HTTP supports one client session at a time.

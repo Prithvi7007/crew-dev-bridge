@@ -14,7 +14,7 @@ ENV HOME=/home/node \
     NODE_ENV=production \
     NODE_OPTIONS=--max-old-space-size=640 \
     REA_MCP_TOOL_FAMILIES=artifact,managed,application,session \
-    REA_MCP_MAX_RESPONSE_BYTES=1048576 \
+    REA_MCP_MAX_RESPONSE_BYTES=10485760 \
     MCP_ALLOWED_HOSTS=127.0.0.1,localhost
 
 EXPOSE 18765
