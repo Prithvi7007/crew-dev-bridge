@@ -9,6 +9,12 @@ A private MCP development bridge for `Prithvi7007/crew_games`, `Prithvi7007/crew
 > requires a one-time audited host installation. The older v15 pinned deployment
 > tools remain available for compatibility but are not the supported release path.
 
+
+> **REA Lite integration (opt-in):** Reuse the existing CREW Secure MCP Tunnel
+> for three tightly scoped REA tools, backed by a separately approved
+> unprivileged host Unix-socket relay. This does not expose REA's 229 upstream
+> tools or add another tunnel. See [deploy/rea-bridge/README.md](deploy/rea-bridge/README.md).
+
 This is a standalone service. It does **not** modify or mount the production `/opt/crew` app.
 
 > **Status:** Source, static checks, and unit tests validated locally. Docker image builds,
