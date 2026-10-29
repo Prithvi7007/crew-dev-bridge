@@ -20,7 +20,16 @@ def load_smoke():
 def test_rea_service_is_separate_and_loopback_only():
     manifest = (ROOT / "compose.yaml").read_text()
     assert "name: rea-lite" in manifest
-    assert '"127.0.0.1:18765:18765"' in manifest
+    assert '"127.0.0.1:18765:8080"' in manifest
+    rea_block = manifest.split("  rea:\n", 1)[1].split("\n  ingress:", 1)[0]
+    ingress_block = manifest.split("  ingress:\n", 1)[1].split("\nnetworks:", 1)[0]
+    assert "ports:" not in rea_block
+    assert "      - rea_isolated" in rea_block
+    assert "      - rea_access" in ingress_block
+    assert "      - rea_isolated" in ingress_block
+    assert "nginx-unprivileged:1.31.7-alpine3.24" in ingress_block
+    assert "./nginx.conf:/etc/nginx/conf.d/default.conf:ro" in ingress_block
+    assert "read_only: true" in ingress_block
     assert "internal: true" in manifest
     assert "read_only: true" in manifest
     assert "no-new-privileges:true" in manifest
@@ -50,7 +59,8 @@ def test_installer_is_explicit_and_refuses_replacement():
     assert "status --porcelain" in installer
     assert 'DEST="/opt/rea-lite"' in installer
     assert '[[ -e "$DEST" || -L "$DEST" ]]' in installer
-    assert "docker compose up -d --no-deps rea" in installer
+    assert "docker compose up -d rea ingress" in installer
+    assert '"$SOURCE/nginx.conf" "$DEST/nginx.conf"' in installer
     assert "scripts/smoke_test.py --retries 15" in installer
     assert "Docker Engine >=28" in preflight
     assert "Port 127.0.0.1:18765 unavailable" in preflight
@@ -95,3 +105,18 @@ def test_smoke_uses_one_session_and_closes_it(monkeypatch):
         ("tools/call", "test-session"),
         ("delete", "test-session"),
     ]
+
+def test_repair_fails_closed_and_does_not_replace_rea():
+    repair = (ROOT / "scripts" / "repair-ingress.sh").read_text()
+    nginx = (ROOT / "nginx.conf").read_text()
+    assert 'ORIGINAL_MERGE="0c41d321bbeefd4287aa70102477a4ebac0729fe"' in repair
+    assert 'cmp -s - "$DEST/compose.yaml"' in repair
+    assert '[[ ! -e "$DEST/nginx.conf" && ! -L "$DEST/nginx.conf" ]]' in repair
+    assert 'docker compose up -d --no-deps ingress' in repair
+    assert 'docker compose up -d --no-deps rea' not in repair
+    assert 'docker compose down' not in repair
+    assert "listen 8080;" in nginx
+    assert "location = /mcp" in nginx
+    assert "proxy_pass http://rea:18765;" in nginx
+    assert "proxy_buffering off;" in nginx
+    assert "location /" in nginx
