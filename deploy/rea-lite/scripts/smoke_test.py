@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""REA Lite MCP protocol smoke test, using only Python stdlib.
+"""REA Lite MCP smoke test, using only Python standard library.
 
-No files are uploaded and no target application is executed. The same session
-is used for initialize, notifications/initialized, tools/list, binary_session,
-and DELETE.
+Read complete bounded JSON responses and complete SSE event frames. The REA
+initialize response contains extensive server instructions (>2 MiB), so cutting
+the response at a fixed 2 MiB produces an invalid-JSON false alarm.
+
+No artifacts are uploaded or executed. One session is used for initialize,
+notifications/initialized, tools/list, binary_session, and DELETE.
 """
 import argparse
 import json
 import sys
 import time
-from urllib import error, request
+from urllib import request
 
 ENDPOINT = "http://127.0.0.1:18765/mcp"
 PROTOCOL = "2025-06-18"
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 def message(method, request_id=None, params=None):
@@ -25,17 +29,56 @@ def message(method, request_id=None, params=None):
 
 
 def decode(body, content_type):
+    """Decode a complete buffered reply (also used by offline unit tests)."""
     content = body.decode("utf-8")
     if "text/event-stream" in content_type:
         frames = []
         for frame in content.replace("\r\n", "\n").split("\n\n"):
-            data = "\n".join(line[5:].lstrip() for line in frame.splitlines() if line.startswith("data:"))
+            data = "\n".join(
+                line[5:].lstrip() for line in frame.splitlines()
+                if line.startswith("data:")
+            )
             if data:
                 frames.append(json.loads(data))
         if not frames:
             raise ValueError("SSE had no result frame")
         return frames[-1]
     return json.loads(content)
+
+
+def read_response(response, expected_id):
+    """Read a bounded full JSON reply or the complete matching SSE message."""
+    content_type = response.headers.get("Content-Type", "")
+    if "text/event-stream" not in content_type:
+        size = response.headers.get("Content-Length")
+        if size is not None and int(size) > MAX_RESPONSE_BYTES:
+            raise ValueError("MCP response exceeds 32 MiB limit (Content-Length)")
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise ValueError("MCP response exceeds 32 MiB limit")
+        return decode(body, content_type)
+
+    received = 0
+    data_lines = []
+    while True:
+        remaining = MAX_RESPONSE_BYTES + 1 - received
+        if remaining <= 0:
+            raise ValueError("MCP SSE response exceeds 32 MiB limit")
+        line = response.readline(remaining)
+        if not line:
+            raise ValueError("MCP SSE ended before the matching JSON-RPC response")
+        received += len(line)
+        if received > MAX_RESPONSE_BYTES:
+            raise ValueError("MCP SSE response exceeds 32 MiB limit")
+        stripped = line.decode("utf-8").rstrip("\r\n")
+        if not stripped:
+            if data_lines:
+                payload = json.loads("\n".join(data_lines))
+                if payload.get("id") == expected_id:
+                    return payload
+                data_lines.clear()
+        elif stripped.startswith("data:"):
+            data_lines.append(stripped[5:].lstrip())
 
 
 def send(payload=None, session=None, method="POST"):
@@ -46,12 +89,14 @@ def send(payload=None, session=None, method="POST"):
     if session:
         headers["Mcp-Session-Id"] = session
     req = request.Request(ENDPOINT, data=payload, headers=headers, method=method)
-    with request.urlopen(req, timeout=10) as response:
-        body = response.read(2 * 1024 * 1024)
+    with request.urlopen(req, timeout=30) as response:
         sid = response.headers.get("Mcp-Session-Id")
+        # Notifications receive 202, and DELETE receives 200 with no response
+        # body. Do not try to read/parse them as JSON or SSE.
         if method == "DELETE" or (payload is not None and b'"id"' not in payload):
             return None, sid
-        return decode(body, response.headers.get("Content-Type", "")), sid
+        expected_id = json.loads(payload)["id"]
+        return read_response(response, expected_id), sid
 
 
 def verify():
@@ -59,7 +104,7 @@ def verify():
     try:
         init, session = send(message("initialize", 1, {
             "protocolVersion": PROTOCOL, "capabilities": {},
-            "clientInfo": {"name": "rea-lite-smoke", "version": "1.0.0"},
+            "clientInfo": {"name": "rea-lite-smoke", "version": "1.0.1"},
         }))
         if init.get("id") != 1 or "result" not in init or not session:
             raise ValueError("MCP initialize failed")
