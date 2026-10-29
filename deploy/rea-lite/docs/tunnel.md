@@ -1,6 +1,6 @@
 # REA Lite: private ChatGPT connection
 
-The REA server uses unauthenticated HTTP on the VPS loopback at `http://127.0.0.1:18765/mcp`. Do not open an inbound public port, use an unauthenticated public tunnel, or include API keys in source control.
+A restricted ingress proxy forwards unauthenticated HTTP from the VPS loopback to an internal-only REA container at `http://127.0.0.1:18765/mcp`. Do not open an inbound public port, use an unauthenticated public tunnel, or include API keys in source control.
 
 Once `python3 /opt/rea-lite/scripts/smoke_test.py` succeeds, consult the current official OpenAI Secure MCP Tunnel documentation:
 

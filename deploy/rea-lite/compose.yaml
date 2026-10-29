@@ -7,9 +7,8 @@ services:
       dockerfile: Dockerfile
     image: rea-lite:6.8.0
     restart: unless-stopped
-    # REA HTTP has NO authentication/TLS. Never publish on 0.0.0.0.
-    ports:
-      - "127.0.0.1:18765:18765"
+    # No published ports on the internal-only network: Docker may silently
+    # omit host port mappings for containers attached only to an internal bridge.
     networks:
       - rea_isolated
     read_only: true
@@ -34,7 +33,34 @@ services:
       start_period: 60s
       retries: 3
 
+  ingress:
+    # Tiny, unprivileged TCP/HTTP gateway. Only this service publishes localhost.
+    # The ingress has a normal bridge for port mapping and a private bridge for REA.
+    image: nginxinc/nginx-unprivileged:1.31.7-alpine3.24
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    pids_limit: 64
+    mem_limit: 96m
+    cpus: "0.25"
+    tmpfs:
+      - /tmp:rw,nosuid,size=64m
+    ports:
+      - "127.0.0.1:18765:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - rea_access
+      - rea_isolated
+    depends_on:
+      - rea
+
 networks:
+  rea_access:
+    driver: bridge
   rea_isolated:
     driver: bridge
     internal: true
