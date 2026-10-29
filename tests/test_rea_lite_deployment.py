@@ -4,6 +4,7 @@ These tests do not build images, contact registries, call REA, or alter host sta
 """
 import importlib.util
 import json
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "deploy" / "rea-lite"
@@ -150,3 +151,62 @@ def test_smoke_reports_connection_reset_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["smoke_test.py"])
     assert smoke.main() == 1
     assert "ConnectionResetError" in capsys.readouterr().err
+
+
+def test_full_json_response_larger_than_two_megabytes_is_not_cut_off():
+    import io
+
+    smoke = load_smoke()
+    instructions = "A" * (2 * 1024 * 1024 + 1024) + "END"
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1,
+                          "result": {"instructions": instructions}}).encode()
+    assert len(payload) > 2 * 1024 * 1024
+    response = io.BytesIO(payload)
+    response.headers = {"Content-Type": "application/json",
+                        "Content-Length": str(len(payload))}
+    decoded = smoke.read_response(response, expected_id=1)
+    assert decoded["result"]["instructions"].endswith("END")
+    assert len(decoded["result"]["instructions"]) == len(instructions)
+
+
+def test_sse_reader_stops_at_matching_complete_event():
+    import io
+
+    smoke = load_smoke()
+    body = (b": keepalive\n\n"
+            b'event: message\ndata: {"jsonrpc":"2.0","id":99,"result":{}}\n\n'
+            b'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"tools":[]}}\n\n')
+    response = io.BytesIO(body)
+    response.headers = {"Content-Type": "text/event-stream"}
+    parsed = smoke.read_response(response, expected_id=2)
+    assert parsed["id"] == 2
+    assert parsed["result"] == {"tools": []}
+
+
+def test_large_or_incomplete_response_errors_are_explicit():
+    import io
+
+    smoke = load_smoke()
+    response = io.BytesIO(b'{"id":1}')
+    response.headers = {"Content-Type": "application/json",
+                        "Content-Length": str(smoke.MAX_RESPONSE_BYTES + 1)}
+    with pytest.raises(ValueError, match="32 MiB limit"):
+        smoke.read_response(response, expected_id=1)
+
+    response = io.BytesIO(b'event: message\ndata: {"id":1')
+    response.headers = {"Content-Type": "text/event-stream"}
+    with pytest.raises(ValueError, match="ended before"):
+        smoke.read_response(response, expected_id=1)
+
+
+def test_smoke_refresh_only_copies_exact_known_script_and_runs_check():
+    updater = (ROOT / "scripts" / "update-smoke.sh").read_text()
+    assert 'OLD_INSTALL="0c41d321bbeefd4287aa70102477a4ebac0729fe"' in updater
+    assert 'PREVIOUS_MERGE="96eaea0935e7cce3d665ef3d916e26e8f07099e1"' in updater
+    assert '[[ "$EUID" == 0 ]]' in updater
+    assert "cmp -s - \"$target\"" in updater
+    assert "smoke_test.py.before-large-response" in updater
+    assert "python3 scripts/smoke_test.py" in updater
+    assert "docker compose" not in updater
+    assert "systemctl" not in updater
+    assert "curl " not in updater

@@ -63,6 +63,23 @@ The one-time repair verifies the exact reviewed v2 Compose, Dockerfile and Nginx
 
 If the smoke test still fails, inspect `cd /opt/rea-lite && docker compose ps -a && docker compose logs --tail=100 --no-color rea ingress` rather than reinstalling or deleting evidence.
 
+## Repair the smoke test's artificial 2 MiB JSON truncation (no REA restart)
+
+A live test showed REA returning an MCP `initialize` response longer than 2 MiB, but the original Python smoke test stopped reading at 2 MiB. The resulting `JSONDecodeError: Unterminated string` is therefore a **test-client truncation**, not evidence that REA rejected initialization.
+
+After this fix PR is merged and pulled to reviewed bridge `main`, refresh **only** the smoke test script:
+
+```bash
+cd /opt/crew-dev-bridge
+git checkout main
+git pull --ff-only origin main
+sudo bash deploy/rea-lite/scripts/update-smoke.sh
+```
+
+The helper verifies the existing script matches an approved previous version, makes a local backup, installs the corrected script, and runs a full initialize → tools/list → binary_session → DELETE handshake. JSON replies are bounded at 32 MiB, and SSE replies are read until the complete matching JSON-RPC event arrives. It does not change running containers, port forwarding, Nginx, CREW, or the wedding website.
+
+If the full handshake still fails, inspect the exact new error before making any deployment changes.
+
 ## ChatGPT connection is a separate step
 
 The upstream REA HTTP endpoint has **no built-in authentication or TLS**. Do not publish TCP 18765 publicly, or connect through an unauthenticated Internet proxy. After local MCP smoke checks pass, use a private, authenticated OpenAI Secure MCP Tunnel if supported by the user's account/workspace. Follow `docs/tunnel.md` for setup and credential-handling cautions; no tunnel secrets live in this repository. An installed REA service is not the same as an active ChatGPT tool connection. REA HTTP supports one client session at a time.
