@@ -162,3 +162,33 @@ def test_socket_credential_validation_and_no_rea_access_from_container():
     assert "systemctl enable --now crew-rea-relay.service" in installer
     assert "crew.service" not in installer
     assert "wedding.service" not in installer
+
+def test_partial_open_failure_still_attempts_target_cleanup(staged, monkeypatch):
+    calls = []
+
+    def fake_mcp(method, request_id=None, params=None, session=None, http_method="POST"):
+        calls.append(method if http_method == "POST" else "DELETE")
+        if method == "initialize":
+            return {"id": 1, "result": {}}, "test-session"
+        return None, None
+
+    def fake_tool(name, args, request_id, session):
+        calls.append(name)
+        if name == "open_binary":
+            raise rea_relay.RelayError("rea_open_binary_failed")
+        return {"structuredContent": {}}
+
+    monkeypatch.setattr(rea_relay, "mcp_request", fake_mcp)
+    monkeypatch.setattr(rea_relay, "_tool", fake_tool)
+    result = rea_relay.handle({"operation": "inspect_artifact", "filename": "example.apk"})
+    assert not result["ok"]
+    assert result["error"] == "rea_open_binary_failed"
+    assert calls[-2:] == ["close_binary", "DELETE"]
+
+
+def test_relay_socket_restart_fails_closed_for_unknown_entries():
+    source = Path(rea_relay.__file__).read_text()
+    assert "stat.S_ISSOCK(item.st_mode)" in source
+    assert "item.st_uid != os.geteuid()" in source
+    assert "except ConnectionRefusedError:" in source
+    assert "REA relay socket is already serving" in source

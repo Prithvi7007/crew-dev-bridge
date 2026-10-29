@@ -157,7 +157,6 @@ def analyze(operation: str, filename: str | None = None) -> dict:
     if operation == "inspect_artifact":
         artifact = validate_artifact(filename)
     session = None
-    opened = False
     try:
         initialized, session = mcp_request(
             "initialize", 1,
@@ -171,7 +170,6 @@ def analyze(operation: str, filename: str | None = None) -> dict:
             result = _tool("binary_session", {}, 2, session)
             return {"ok": True, "operation": "status", **_summary(result)}
         _tool("open_binary", {"path": artifact["container_path"]}, 2, session)
-        opened = True
         result = _tool("inspect_artifact", {"integrity_policy": "fail",
                                              "detail": "summary"}, 3, session)
         return {"ok": True, "operation": "inspect_artifact",
@@ -179,7 +177,7 @@ def analyze(operation: str, filename: str | None = None) -> dict:
                 **_summary(result)}
     finally:
         if session:
-            if opened:
+            if operation == "inspect_artifact":
                 try:
                     _tool("close_binary", {}, 4, session)
                 except (RelayError, OSError, ValueError):
@@ -236,9 +234,22 @@ class Handler(socketserver.StreamRequestHandler):
 
 
 def main():
-    if SOCKET.exists() or SOCKET.is_symlink():
-        raise SystemExit("Socket already exists; do not replace an existing endpoint")
     SOCKET.parent.mkdir(parents=True, exist_ok=True)
+    # On a systemd restart an unclean exit can leave a stale Unix-socket
+    # filesystem entry. Remove ONLY a socket owned by this fixed worker UID,
+    # and only after proving that no process accepts a connection to it.
+    if SOCKET.exists() or SOCKET.is_symlink():
+        item = SOCKET.lstat()
+        if not stat.S_ISSOCK(item.st_mode) or item.st_uid != os.geteuid():
+            raise SystemExit("Unexpected or unowned REA socket; operator review required")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            try:
+                probe.connect(str(SOCKET))
+            except ConnectionRefusedError:
+                SOCKET.unlink()
+            else:
+                raise SystemExit("REA relay socket is already serving")
     os.umask(0o007)
     with socketserver.UnixStreamServer(str(SOCKET), Handler) as server:
         os.chmod(SOCKET, 0o660)
