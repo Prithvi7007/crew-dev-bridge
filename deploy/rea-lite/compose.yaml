@@ -29,6 +29,8 @@ services:
       - /home/node:rw,nosuid,size=128m,uid=1000,gid=1000,mode=0700
     volumes:
       - ./artifacts:/work/artifacts:ro
+      # Dedicated operator-approved uploads. Not CREW, wedding or legacy artifacts.
+      - ./managed:/work/managed:ro
       - rea_evidence:/work/evidence
     healthcheck:
       test: ["CMD","node","-e","const s=require('net').connect(18765,'127.0.0.1');s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.setTimeout(1000,()=>process.exit(1))"]

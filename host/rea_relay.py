@@ -17,6 +17,11 @@ import stat
 import struct
 from urllib import request
 
+try:
+    from . import rea_store
+except ImportError:  # installed as a standalone host script
+    import rea_store
+
 SOCKET = Path("/run/crew-rea/rea.sock")
 ARTIFACTS = Path("/opt/rea-lite/artifacts")
 REA_URL = "http://127.0.0.1:18765/mcp"
@@ -27,7 +32,11 @@ MAX_RESULT_BYTES = 12_000
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 ALLOWED_EXTENSIONS = (".apk", ".aab", ".zip", ".jar", ".asar")
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
-ALLOWED_OPERATIONS = frozenset(("capabilities", "status", "inspect_artifact"))
+ALLOWED_OPERATIONS = frozenset((
+    "capabilities", "status", "inspect_artifact", "inspect_managed",
+    "vault_list", "vault_info", "vault_begin", "vault_chunk",
+    "vault_upload_status", "vault_finish", "vault_cancel", "vault_delete",
+))
 
 
 class RelayError(Exception):
@@ -151,11 +160,13 @@ def _summary(result: dict) -> dict:
 
 
 def analyze(operation: str, filename: str | None = None) -> dict:
-    if operation not in ("status", "inspect_artifact"):
+    if operation not in ("status", "inspect_artifact", "inspect_managed"):
         return {"ok": False, "error": "operation_not_allowed"}
     artifact = None
     if operation == "inspect_artifact":
         artifact = validate_artifact(filename)
+    elif operation == "inspect_managed":
+        artifact = rea_store.file_info(filename)
     session = None
     try:
         initialized, session = mcp_request(
@@ -177,7 +188,7 @@ def analyze(operation: str, filename: str | None = None) -> dict:
                 **_summary(result)}
     finally:
         if session:
-            if operation == "inspect_artifact":
+            if operation in ("inspect_artifact", "inspect_managed"):
                 try:
                     _tool("close_binary", {}, 4, session)
                 except (RelayError, OSError, ValueError):
@@ -189,27 +200,63 @@ def analyze(operation: str, filename: str | None = None) -> dict:
 
 
 def handle(payload: object) -> dict:
-    if not isinstance(payload, dict) or set(payload) - {"operation", "filename"}:
+    if not isinstance(payload, dict):
         return {"ok": False, "error": "invalid_request"}
     operation = payload.get("operation")
-    if operation not in ALLOWED_OPERATIONS:
+    allowed_fields = {
+        "capabilities": {"operation"},
+        "status": {"operation"},
+        "inspect_artifact": {"operation", "filename"},
+        "inspect_managed": {"operation", "filename"},
+        "vault_list": {"operation"},
+        "vault_info": {"operation", "filename"},
+        "vault_begin": {"operation", "filename", "size", "sha256"},
+        "vault_chunk": {"operation", "upload_id", "offset", "data_b64"},
+        "vault_upload_status": {"operation", "upload_id"},
+        "vault_finish": {"operation", "upload_id"},
+        "vault_cancel": {"operation", "upload_id"},
+        "vault_delete": {"operation", "filename", "expected_sha256"},
+    }
+    if operation not in allowed_fields:
         return {"ok": False, "error": "operation_not_allowed"}
-    if operation == "capabilities":
-        return {"ok": True, "operations": ["capabilities", "status", "inspect_artifact"],
-                "transport": "existing_crew_tunnel_via_unix_socket",
-                "requires_manual_operator_artifact_upload": True,
-                "executable_or_dynamic_tools_available": False}
-    if operation == "status" and "filename" in payload:
-        return {"ok": False, "error": "invalid_request"}
-    if operation == "inspect_artifact" and "filename" not in payload:
+    if operation in ("inspect_artifact", "inspect_managed") and "filename" not in payload:
         return {"ok": False, "error": "filename_required"}
+    if set(payload) != allowed_fields[operation]:
+        return {"ok": False, "error": "invalid_request"}
+    if operation == "capabilities":
+        return {"ok": True,
+                "operations": sorted(ALLOWED_OPERATIONS),
+                "transport": "existing_crew_tunnel_via_unix_socket",
+                "vault_path": str(rea_store.ROOT),
+                "max_file_bytes": rea_store.MAX_FILE_BYTES,
+                "max_chunk_bytes": rea_store.MAX_CHUNK_BYTES,
+                "executable_or_dynamic_tools_available": False}
     try:
-        return analyze(operation, payload.get("filename"))
-    except RelayError as exc:
+        if operation in ("status", "inspect_artifact", "inspect_managed"):
+            return analyze(operation, payload.get("filename"))
+        if operation == "vault_list":
+            return rea_store.list_files()
+        if operation == "vault_info":
+            return rea_store.file_info(payload["filename"])
+        if operation == "vault_begin":
+            return rea_store.begin_upload(payload["filename"], payload["size"],
+                                          payload["sha256"])
+        if operation == "vault_chunk":
+            return rea_store.append_chunk(payload["upload_id"], payload["offset"],
+                                          payload["data_b64"])
+        if operation == "vault_upload_status":
+            return rea_store.upload_status(payload["upload_id"])
+        if operation == "vault_finish":
+            return rea_store.finish_upload(payload["upload_id"])
+        if operation == "vault_cancel":
+            return rea_store.cancel_upload(payload["upload_id"])
+        if operation == "vault_delete":
+            return rea_store.delete_file(payload["filename"], payload["expected_sha256"])
+    except (RelayError, rea_store.StoreError) as exc:
         return {"ok": False, "error": str(exc)}
-    except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
-        return {"ok": False, "error": "rea_mcp_unavailable_or_invalid"}
-
+    except (OSError, TimeoutError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return {"ok": False, "error": "rea_vault_or_mcp_error"}
+    return {"ok": False, "error": "operation_not_allowed"}
 
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -218,9 +265,9 @@ class Handler(socketserver.StreamRequestHandler):
         _, uid, _ = struct.unpack("3i", creds)
         if uid != BRIDGE_UID:
             return
-        self.request.settimeout(120)
-        raw = self.rfile.readline(2049)
-        if not raw.endswith(b"\n") or len(raw) > 2048:
+        self.request.settimeout(180)
+        raw = self.rfile.readline(100 * 1024 + 1)
+        if not raw.endswith(b"\n") or len(raw) > 100 * 1024:
             result = {"ok": False, "error": "invalid_request_size"}
         else:
             try:

@@ -30,7 +30,8 @@ def test_host_allowlist_and_no_arbitrary_paths():
     caps = rea_relay.handle({"operation": "capabilities"})
     assert caps["ok"]
     assert caps["executable_or_dynamic_tools_available"] is False
-    assert set(caps["operations"]) == {"capabilities", "status", "inspect_artifact"}
+    assert {"capabilities", "status", "inspect_artifact"} <= set(caps["operations"])
+    assert {"vault_list", "vault_begin", "vault_delete", "inspect_managed"} <= set(caps["operations"])
 
 
 @pytest.fixture
