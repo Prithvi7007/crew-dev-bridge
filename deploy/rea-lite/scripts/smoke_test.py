@@ -80,7 +80,7 @@ def verify():
         if session:
             try:
                 send(session=session, method="DELETE")
-            except (error.URLError, ValueError) as exc:
+            except (OSError, ValueError) as exc:
                 print(f"Warning: MCP session DELETE failed: {type(exc).__name__}", file=sys.stderr)
 
 
@@ -92,7 +92,7 @@ def main():
         try:
             verify()
             return 0
-        except (error.URLError, TimeoutError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError) as exc:
             if index + 1 >= args.retries:
                 print(f"FAIL: MCP smoke test: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return 1
