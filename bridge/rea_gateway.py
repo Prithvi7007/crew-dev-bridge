@@ -18,6 +18,8 @@ FIELDS = {
     "inspect_managed": ("filename",),
     "vault_list": (),
     "vault_info": ("filename",),
+    "vault_entries": ("filename", "expected_sha256", "offset", "limit"),
+    "vault_evidence": ("filename", "expected_sha256", "collection", "offset", "limit"),
     "vault_begin": ("filename", "size", "sha256"),
     "vault_chunk": ("upload_id", "offset", "data_b64"),
     "vault_upload_status": ("upload_id",),

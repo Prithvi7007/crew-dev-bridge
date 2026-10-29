@@ -1,6 +1,6 @@
 """Unprivileged REA Lite relay for the existing CREW MCP tunnel.
 
-Only three fixed operations: capabilities, status, inspect_artifact.
+Fixed operations cover status, static inspection and the dedicated vault.
 The relay is a separate host trust boundary; the MCP bridge cannot pass raw
 REA tool names, arbitrary arguments, shell commands, paths, or URLs.
 REA target contents are untrusted data, not instructions.
@@ -29,13 +29,27 @@ BRIDGE_UID = 10001
 PROTOCOL = "2025-06-18"
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_RESULT_BYTES = 12_000
+MAX_DETAIL_BYTES = 12_000
+MAX_VIEW_ROWS = 25
+MAX_VIEW_OFFSET = 1_000_000
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 ALLOWED_EXTENSIONS = (".apk", ".aab", ".zip", ".jar", ".asar")
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
+EVIDENCE_ID = re.compile(r"ev_[0-9a-f]{64}\Z")
+VIEW_OPERATIONS = ("vault_entries", "vault_evidence")
+DETAIL_COLLECTIONS = ("nodes", "edges", "integrity_contradictions")
+ENTRY_FIELDS = (
+    "logical_path", "entry_kind", "artifact_format", "declared_size",
+    "compressed_size", "encrypted", "executable", "hash_status",
+)
+NODE_FIELDS = (
+    "format", "sha256", "size", "architecture", "content_state",
+)
 ALLOWED_OPERATIONS = frozenset((
     "capabilities", "status", "inspect_artifact", "inspect_managed",
     "vault_list", "vault_info", "vault_begin", "vault_chunk",
     "vault_upload_status", "vault_finish", "vault_cancel", "vault_delete",
+    *VIEW_OPERATIONS,
 ))
 
 
@@ -128,7 +142,8 @@ def mcp_request(method: str, request_id: int | None = None,
 
 def _tool(name: str, arguments: dict, request_id: int, session: str) -> dict:
     # Names are hardcoded by the host; never accept caller-provided tool names.
-    if name not in ("binary_session", "open_binary", "inspect_artifact", "close_binary"):
+    if name not in ("binary_session", "open_binary", "inspect_artifact",
+                    "inspect_analysis_view", "close_binary"):
         raise RelayError("tool_not_allowed")
     raw, _ = mcp_request("tools/call", request_id,
                          {"name": name, "arguments": arguments}, session)
@@ -159,11 +174,114 @@ def _summary(result: dict) -> dict:
     return fields
 
 
-def analyze(operation: str, filename: str | None = None) -> dict:
-    if operation not in ("status", "inspect_artifact", "inspect_managed"):
+def _view_arguments(expected_sha256, collection, offset, limit):
+    """Validate the complete caller boundary before hashing or opening REA."""
+    rea_store.valid_sha(expected_sha256)
+    if (type(offset) is not int or not 0 <= offset <= MAX_VIEW_OFFSET
+            or type(limit) is not int or not 1 <= limit <= MAX_VIEW_ROWS):
+        raise RelayError("invalid_page")
+    if collection not in ("occurrences", *DETAIL_COLLECTIONS):
+        raise RelayError("invalid_collection")
+
+
+def _checked_evidence(result: dict, artifact: dict, kind: str) -> dict:
+    """Admit only the expected view receipt tied to this exact vault artifact."""
+    value = result.get("structuredContent")
+    if not isinstance(value, dict):
+        raise RelayError("invalid_rea_evidence")
+    normalized = value.get("normalized_result")
+    subject = value.get("subject")
+    if (not isinstance(normalized, dict) or not isinstance(subject, dict)
+            or normalized.get("kind") != kind
+            or normalized.get("parent_operation") != "inspect_artifact"
+            or value.get("operation") != "inspect_analysis_view"
+            or not isinstance(normalized.get("artifact"), dict)
+            or not isinstance(subject.get("digest"), dict)
+            or not isinstance(value.get("evidence_id"), str)
+            or not EVIDENCE_ID.fullmatch(value["evidence_id"])):
+        raise RelayError("invalid_rea_evidence")
+    observed = normalized["artifact"]
+    if (subject["digest"].get("sha256") != artifact["sha256"]
+            or subject.get("local_path") != artifact["container_path"]
+            or observed.get("sha256") != artifact["sha256"]
+            or observed.get("path") != artifact["container_path"]):
+        raise RelayError("rea_evidence_mismatch")
+    parent = normalized.get("parent_evidence_id")
+    if not isinstance(parent, str) or not EVIDENCE_ID.fullmatch(parent):
+        raise RelayError("invalid_rea_evidence")
+    return value
+
+
+def _inventory_page(operation, artifact, summary, collection, offset, limit, session):
+    """Project retained inventory in this same session; never slice JSON text."""
+    receipt = _checked_evidence(summary, artifact, "summary")
+    parent = receipt["normalized_result"]["parent_evidence_id"]
+    effective = limit
+    request_id = 4
+    while True:
+        view = {"kind": "inventory", "collection": collection,
+                "offset": offset, "limit": effective}
+        if collection == "occurrences":
+            view["fields"] = list(ENTRY_FIELDS)
+        elif collection == "nodes":
+            view["fields"] = list(NODE_FIELDS)
+        result = _tool("inspect_analysis_view", {
+            "source": {"kind": "retained-evidence", "evidence_id": parent},
+            "view": view,
+        }, request_id, session)
+        value = _checked_evidence(result, artifact, "inventory")
+        page = value["normalized_result"]
+        items, coverage = page.get("items"), page.get("coverage")
+        if (page.get("parent_evidence_id") != parent or page.get("view") != view
+                or not isinstance(items, list) or len(items) > effective
+                or type(page.get("source_complete")) is not bool
+                or not isinstance(coverage, dict)):
+            raise RelayError("invalid_rea_evidence")
+        total = coverage.get("total")
+        exhausted = type(total) is int and (offset >= total or offset + len(items) >= total)
+        if (type(total) is not int or total < 0
+                or type(coverage.get("examined")) is not int
+                or coverage["examined"] != len(items)
+                or coverage.get("exhausted") is not exhausted
+                or coverage.get("next_offset") != (None if exhausted else offset + len(items))
+                or coverage.get("status") != ("page" if items else "empty")):
+            raise RelayError("invalid_rea_evidence")
+        manifest = page.get("manifest")
+        if not isinstance(manifest, dict) or manifest.get("root_sha256") != artifact["sha256"]:
+            raise RelayError("rea_evidence_mismatch")
+        envelope = {
+            "ok": True, "operation": operation,
+            "filename": artifact["filename"], "bytes": artifact["bytes"],
+            "sha256": artifact["sha256"], "collection": collection,
+            "offset": offset, "requested_limit": limit, "effective_limit": effective,
+            "source_reinspected": True, "untrusted_target_data": True,
+            "truncated": False, "evidence": value,
+        }
+        wire = json.dumps(envelope, ensure_ascii=True, separators=(",", ":"),
+                          allow_nan=False).encode()
+        if len(wire) <= MAX_DETAIL_BYTES:
+            return envelope
+        if effective == 1:
+            raise RelayError("rea_page_too_large")
+        effective = max(1, effective // 2)
+        request_id += 1
+
+
+def analyze(operation: str, filename: str | None = None, *,
+            expected_sha256=None, collection=None, offset=0, limit=10) -> dict:
+    if operation not in ("status", "inspect_artifact", "inspect_managed", *VIEW_OPERATIONS):
         return {"ok": False, "error": "operation_not_allowed"}
     artifact = None
-    if operation == "inspect_artifact":
+    if operation in VIEW_OPERATIONS:
+        collection = "occurrences" if operation == "vault_entries" else collection
+        # Occurrences have their own fixed entry tool, not an arbitrary selector.
+        if operation == "vault_evidence" and collection not in DETAIL_COLLECTIONS:
+            raise RelayError("invalid_collection")
+        _view_arguments(expected_sha256, collection, offset, limit)
+        artifact = rea_store.file_info(filename)
+        if artifact["sha256"] != expected_sha256:
+            raise RelayError("sha256_mismatch")
+    elif operation == "inspect_artifact":
         artifact = validate_artifact(filename)
     elif operation == "inspect_managed":
         artifact = rea_store.file_info(filename)
@@ -183,14 +301,16 @@ def analyze(operation: str, filename: str | None = None) -> dict:
         _tool("open_binary", {"path": artifact["container_path"]}, 2, session)
         result = _tool("inspect_artifact", {"integrity_policy": "fail",
                                              "detail": "summary"}, 3, session)
+        if operation in VIEW_OPERATIONS:
+            return _inventory_page(operation, artifact, result, collection, offset, limit, session)
         return {"ok": True, "operation": "inspect_artifact",
                 "filename": artifact["filename"], "bytes": artifact["bytes"],
                 **_summary(result)}
     finally:
         if session:
-            if operation in ("inspect_artifact", "inspect_managed"):
+            if operation != "status":
                 try:
-                    _tool("close_binary", {}, 4, session)
+                    _tool("close_binary", {}, 100 if operation in VIEW_OPERATIONS else 4, session)
                 except (RelayError, OSError, ValueError):
                     pass
             try:
@@ -210,6 +330,9 @@ def handle(payload: object) -> dict:
         "inspect_managed": {"operation", "filename"},
         "vault_list": {"operation"},
         "vault_info": {"operation", "filename"},
+        "vault_entries": {"operation", "filename", "expected_sha256", "offset", "limit"},
+        "vault_evidence": {"operation", "filename", "expected_sha256", "collection",
+                           "offset", "limit"},
         "vault_begin": {"operation", "filename", "size", "sha256"},
         "vault_chunk": {"operation", "upload_id", "offset", "data_b64"},
         "vault_upload_status": {"operation", "upload_id"},
@@ -230,8 +353,17 @@ def handle(payload: object) -> dict:
                 "vault_path": str(rea_store.ROOT),
                 "max_file_bytes": rea_store.MAX_FILE_BYTES,
                 "max_chunk_bytes": rea_store.MAX_CHUNK_BYTES,
+                "max_view_rows": MAX_VIEW_ROWS,
+                "max_view_offset": MAX_VIEW_OFFSET,
+                "max_view_bytes": MAX_DETAIL_BYTES,
+                "detail_collections": list(DETAIL_COLLECTIONS),
                 "executable_or_dynamic_tools_available": False}
     try:
+        if operation in VIEW_OPERATIONS:
+            return analyze(operation, payload["filename"],
+                           expected_sha256=payload["expected_sha256"],
+                           collection=payload.get("collection"),
+                           offset=payload["offset"], limit=payload["limit"])
         if operation in ("status", "inspect_artifact", "inspect_managed"):
             return analyze(operation, payload.get("filename"))
         if operation == "vault_list":

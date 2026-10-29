@@ -58,7 +58,7 @@ and deletion can all be controlled from ChatGPT without further VPS work.
 
 When uploading via root SFTP, set permissions on the completed file:
 
-    sudo chgrp 1000 /opt/rea-lite/managed/Ring_3.115.0.xapk
+    sudo chown nobody:1000 /opt/rea-lite/managed/Ring_3.115.0.xapk
     sudo chmod 0640 /opt/rea-lite/managed/Ring_3.115.0.xapk
 
 The directory owner is the non-root relay user nobody, group 1000, mode
@@ -84,3 +84,37 @@ recursive delete or operation outside the managed vault is available.
 No new public listener, tunnel, Docker socket, arbitrary file path, or host
 command is granted to the assistant. All REA tools and returned artifact
 content remain untrusted and require human review.
+
+## Bounded archive and evidence views upgrade
+
+After merging the evidence-views PR, run on the VPS:
+
+    cd /opt/crew-dev-bridge
+    git checkout main
+    git pull --ff-only origin main
+    sudo bash deploy/rea-vault/upgrade-analysis.sh
+
+This verifies the installed relay, store and service unit against vault baseline
+c8e5b689, builds the bridge before replacing the relay, retains the original
+relay as rea_relay.py.before-analysis-views, and verifies capabilities and a REA
+session. Failure restores the original relay and recreates the bridge to bind
+the recreated socket. The rebuilt bridge remains installed; new tools fail
+closed against the restored old relay. An existing backup blocks a second run;
+review the failure before removing or archiving that backup.
+
+Refresh the CREW connector actions. Verify Ring with rea_vault_info, then use
+rea_vault_entries(filename, expected_sha256, offset=0, limit=10). Use
+rea_vault_evidence with collection nodes, edges, or integrity_contradictions
+for selected inventory detail. All requests rehash and reinspect the same
+vault file, retrieve a retained view within the same session, and close it.
+Each page is limited to 25 rows and 12,000 serialized bytes; large pages shrink
+without cutting JSON. One oversized row returns an explicit error. Offsets
+range from 0 to 1,000,000. Follow coverage.next_offset until coverage.exhausted,
+while separately checking source_complete, source_coverage, and limitations.
+Page exhaustion does not establish complete Android code analysis.
+
+Entry occurrences identify archive paths and artifact IDs. Node pages carry
+available hashes and sizes; join using artifact_id. Unavailable hashes remain
+unknown. These tools do not extract or decompile embedded APKs, execute targets,
+or enable arbitrary REA tools. The host relay update is required; source merge
+alone does not install it.
