@@ -116,6 +116,70 @@ def rea_bridge_inspect_artifact(filename: str) -> dict:
     return rea_gateway.call("inspect_artifact", filename)
 
 
+@mcp.tool()
+def rea_vault_list() -> dict:
+    """List only files in the dedicated REA vault; no production filesystem access."""
+    return rea_gateway.call("vault_list")
+
+
+@mcp.tool()
+def rea_vault_info(filename: str) -> dict:
+    """Get byte count and SHA-256 for one REA-vault artifact before analysis/deletion."""
+    return rea_gateway.call("vault_info", filename)
+
+
+@mcp.tool()
+def rea_vault_upload_begin(filename: str, size: int, sha256: str) -> dict:
+    """Begin resumable, SHA-256-checked upload to the REA-only vault (max 512 MiB)."""
+    return rea_gateway.call("vault_begin", filename=filename, size=size, sha256=sha256)
+
+
+@mcp.tool()
+def rea_vault_upload_chunk(upload_id: str, offset: int, data_b64: str) -> dict:
+    """Append one sequential base64 chunk (<=64 KiB raw); never writes elsewhere."""
+    return rea_gateway.call("vault_chunk", upload_id=upload_id,
+                            offset=offset, data_b64=data_b64)
+
+
+@mcp.tool()
+def rea_vault_upload_status(upload_id: str) -> dict:
+    """Get byte offset for an incomplete REA-vault upload so it can resume."""
+    return rea_gateway.call("vault_upload_status", upload_id=upload_id)
+
+
+@mcp.tool()
+def rea_vault_upload_finish(upload_id: str) -> dict:
+    """Publish an upload only after its exact length and SHA-256 are verified."""
+    return rea_gateway.call("vault_finish", upload_id=upload_id)
+
+
+@mcp.tool()
+def rea_vault_upload_cancel(upload_id: str) -> dict:
+    """Discard only an incomplete upload inside the dedicated REA vault."""
+    return rea_gateway.call("vault_cancel", upload_id=upload_id)
+
+
+@mcp.tool()
+def rea_vault_delete(filename: str, expected_sha256: str) -> dict:
+    """PERMANENT deletion of one REA-vault file, only when the user explicitly asks.
+
+    Require exact filename and the SHA-256 obtained from rea_vault_info. Does not
+    touch source conversations, ChatGPT Library, CREW, wedding, or REA evidence.
+    """
+    return rea_gateway.call("vault_delete", filename=filename,
+                            expected_sha256=expected_sha256)
+
+
+@mcp.tool()
+def rea_vault_inspect(filename: str) -> dict:
+    """Static REA inspection of a verified staged APK/XAPK/AAB/ZIP/JAR/ASAR.
+
+    Target files remain read-only to REA. No app execution, camera access or
+    unrestricted REA operations are exposed.
+    """
+    return rea_gateway.call("inspect_managed", filename)
+
+
 def _crew_ops_readonly_request(operation: str) -> dict:
     import json
     import socket

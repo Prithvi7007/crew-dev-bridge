@@ -1,8 +1,7 @@
-"""Bounded gateway to the independently installed REA Lite host relay.
+"""Bounded client for the independent, privileged-boundary REA host relay.
 
-No Docker socket, network destination, arbitrary tool name, or host paths
-are supplied by the caller. The host relay independently authenticates the
-bridge UID and validates every requested operation.
+No filesystem paths, URLs, arbitrary REA tools, or host shell commands are
+accepted. The server validates operations independently with SO_PEERCRED.
 """
 from __future__ import annotations
 
@@ -10,25 +9,46 @@ import json
 import socket
 
 SOCKET = "/run/crew-rea/rea.sock"
-VALID_OPERATIONS = frozenset(("capabilities", "status", "inspect_artifact"))
-MAX_REQUEST = 1024
+MAX_REQUEST = 100 * 1024
 MAX_REPLY = 24_000
+FIELDS = {
+    "capabilities": (),
+    "status": (),
+    "inspect_artifact": ("filename",),
+    "inspect_managed": ("filename",),
+    "vault_list": (),
+    "vault_info": ("filename",),
+    "vault_begin": ("filename", "size", "sha256"),
+    "vault_chunk": ("upload_id", "offset", "data_b64"),
+    "vault_upload_status": ("upload_id",),
+    "vault_finish": ("upload_id",),
+    "vault_cancel": ("upload_id",),
+    "vault_delete": ("filename", "expected_sha256"),
+}
 
 
-def call(operation: str, filename: str | None = None) -> dict:
-    if operation not in VALID_OPERATIONS:
+def call(operation: str, filename: str | None = None, **fields) -> dict:
+    if operation not in FIELDS:
         return {"ok": False, "error": "operation_not_allowed"}
-    payload = {"operation": operation}
-    if operation == "inspect_artifact":
-        if not isinstance(filename, str) or not 1 <= len(filename) <= 108:
-            return {"ok": False, "error": "invalid_filename"}
-        payload["filename"] = filename
-    wire = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+    if filename is not None:
+        fields["filename"] = filename
+    if "filename" in fields and (
+        not isinstance(fields["filename"], str) or
+        not 1 <= len(fields["filename"]) <= 108
+    ):
+        return {"ok": False, "error": "invalid_filename"}
+    if set(fields) != set(FIELDS[operation]):
+        return {"ok": False, "error": "invalid_arguments"}
+    payload = {"operation": operation, **fields}
+    try:
+        wire = (json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_arguments"}
     if len(wire) > MAX_REQUEST:
         return {"ok": False, "error": "request_too_large"}
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.settimeout(105)
+            conn.settimeout(180)
             conn.connect(SOCKET)
             conn.sendall(wire)
             buf = bytearray()
