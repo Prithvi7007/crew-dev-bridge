@@ -49,11 +49,21 @@ def test_symlinked_upload_directory_is_rejected(monkeypatch, tmp_path):
     "app/photos/routes.py", "app/uploads/routes.py",
     "app/gallery/routes.py", "app/static/photo-picker.js",
 ])
-def test_adding_photo_feature_requires_operator_review(monkeypatch, file):
+def test_photo_code_uses_the_normal_code_only_release_gates(monkeypatch, file):
     def git(*args, **kwargs):
         return file if "--name-only" in args else ""
     monkeypatch.setattr(release, "git", git)
-    with pytest.raises(release.Stop, match="photo_feature_changes_require_manual_review"):
+    assert release.allowed_changes("a" * 40, "b" * 40) == 1
+
+
+@pytest.mark.parametrize("file", [
+    "requirements.txt", "app/config.py", "migrations/photos.py",
+    ".github/workflows/photos.yml", ".env.photos",
+])
+def test_photo_code_permission_keeps_schema_and_runtime_gates(monkeypatch, file):
+    monkeypatch.setattr(release, "git", lambda *args, **kwargs:
+                        file if "--name-only" in args else "")
+    with pytest.raises(release.Stop, match="schema_or_runtime_change_requires_manual_review"):
         release.allowed_changes("a" * 40, "b" * 40)
 
 
