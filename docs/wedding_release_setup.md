@@ -8,7 +8,9 @@ website. It never changes the CREW release agent, CREW service or crew_prod.
 
 ## Why code-only at first
 
-Wedding V3 includes guest contacts, RSVPs and admin logs. Photo uploads are not yet implemented. Unlike
+Wedding V3 includes guest contacts, RSVPs and admin logs. Photo code can use
+this code-only pipeline; private cloud media and moderation metadata need
+their own independent backups. Unlike
 CREW's reviewed additive Alembic migration workflow, Wedding V3 includes
 manual schema scripts. CI now exists on the protected `main` branch. This agent **refuses**
 changes under app/models, migrations, scripts, runtime/config files,
@@ -43,12 +45,16 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 3. Gunicorn serves `/readyz` on the local UNIX socket
    `/run/wedding/wedding.sock` with Host `adlinprithvi.cloud`.
    `/readyz` must return HTTP 200 and JSON `{"status":"ready"}`.
-4. Photo uploads are **not implemented**. There must be no directory
+4. The legacy photo-storage checks require no directory
    `/var/www/wedding-v3-101f73e/uploads` and zero rows in the existing
    `photo_uploads` database table. Both are checked on every release.
-   Any uploaded photos, new upload/gallery feature files, or upload directory
-   blocks automated releases until a new reviewed media-backup procedure ships.
-   The guard does not discover arbitrary future storage paths.
+   Existing legacy photo records or an upload directory block automated releases
+   until their media-backup procedure is reviewed. The guard does not discover
+   arbitrary storage paths or back up private Cloudflare R2 objects and moderation
+   metadata; those backups remain an independent operational responsibility.
+   Photo/upload/gallery **code changes follow the normal code-only gates**.
+   Their filenames do not require additional approval. Schema, runtime config,
+   dependencies, workflows, unsafe paths and symlinks remain guarded.
 5. PostgreSQL local peer auth permits a subprocess running as `postgres`
    to perform `pg_dump`, `createdb`, `pg_restore`, and `dropdb`.
    The fixed scratch database `wedding_release_verify` must not exist.
@@ -74,8 +80,8 @@ VPS; if any are false, amend and retest the code in a NEW PR:
 2. Confirm a clean detached worktree, exact Git metadata, and expected remote.
    Fetch the approved `main` SHA, require fast-forward history and code-only
    diffs; do not switch the live checkout to a branch.
-3. Require existing app readiness and zero activity in the unfinished photo
-   upload feature; then take a custom-format `pg_dump` of `wedding_db`
+3. Require existing app readiness and zero activity in the legacy photo
+   storage checked by this agent; then take a custom-format `pg_dump` of `wedding_db`
    with a SHA-256 manifest. No media archive is made until photo uploads ship.
 4. Restore the backup to the uniquely named **scratch database only** and
    validate the `invitations` table before deleting scratch.
@@ -120,8 +126,9 @@ code-only pilot release with operator observation before routine use.
 - `Wedding V3 CI` is green on the protected `main` branch; check the exact target commit before any release.
 - The wedding service and socket have been observed. Confirm the systemd
   unit, exact remote URL, metadata ownership and sandbox permissions on host.
-- Photo uploads are unfinished; the automated release is deliberately blocked
-  when known upload persistence or new photo/upload code appears.
+- Known legacy upload persistence remains guarded. Photo/upload/gallery code
+  alone does not block a release; the normal CI, code-only, backup and health
+  checks still apply.
 - Do not bypass CI or missing preflight by changing environment flags.
 - This release agent has no schema migration rights by design.
 

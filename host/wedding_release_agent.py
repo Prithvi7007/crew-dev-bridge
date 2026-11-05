@@ -202,8 +202,6 @@ def ci_green(sha: str) -> bool:
 def allowed_changes(old: str, new: str):
     paths = git("diff", "--name-only", "--no-renames", old, new).splitlines()
     for path in paths:
-        if any(part.startswith(("photo", "upload", "gallery")) for part in path.lower().split("/")):
-            raise Stop("photo_feature_changes_require_manual_review")
         if path in GATE_FILES or path.startswith(GATE_DIRS) or path.startswith(".env"):
             raise Stop("schema_or_runtime_change_requires_manual_review")
         if not re.fullmatch(r"[A-Za-z0-9_./-]+", path) or ".." in path.split("/"):
