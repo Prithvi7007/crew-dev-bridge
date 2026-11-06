@@ -1,6 +1,8 @@
 # CREW Development Bridge — Version 0.2 (private pilot)
 
 A private MCP development bridge for `Prithvi7007/crew_games`, `Prithvi7007/crew-dev-bridge`, and `Prithvi7007/Wedding_Website_Final`. See [the wedding integration guide](docs/wedding_bridge.md).
+The bridge also supports the standalone `Prithvi7007/Career-intelligence`
+development repository; see [Career Intelligence activation](docs/career_intelligence_bridge.md).
 
 > **2026 reusable release extension:** The development source workflow now includes a
 > separately installed, zero-argument production release agent for merged CREW

@@ -10,7 +10,7 @@ import tempfile
 import time
 
 QUEUE = Path('/queue')
-ALLOWED = {'pytest', 'react_build', 'bridge_syntax', 'wedding_syntax'}
+ALLOWED = {'pytest', 'react_build', 'bridge_syntax', 'wedding_syntax', 'career_test', 'career_syntax'}
 # Bound the one compiled JS entry, not general source files or other assets.
 FRONTEND_ARTIFACT_MAX = {'app/static/react/player.js': 450_000,
                          'app/static/react/player.css': 250_000}
@@ -59,11 +59,15 @@ def execute(ticket: dict) -> dict:
     if kind not in ALLOWED or not isinstance(job_id, str) or len(job_id) != 32 or any(c not in '0123456789abcdef' for c in job_id):
         raise ValueError('Invalid job')
     repository = ticket.get('repository', 'Prithvi7007/crew_games')
-    if repository not in ('Prithvi7007/crew_games', 'Prithvi7007/crew-dev-bridge', 'Prithvi7007/Wedding_Website_Final'):
+    checks_by_repo = {
+        'Prithvi7007/crew_games': {'pytest', 'react_build'},
+        'Prithvi7007/crew-dev-bridge': {'pytest', 'bridge_syntax'},
+        'Prithvi7007/Wedding_Website_Final': {'pytest', 'wedding_syntax'},
+        'Prithvi7007/Career-intelligence': {'career_test', 'career_syntax'},
+    }
+    if repository not in checks_by_repo:
         raise ValueError('Unsupported repository')
-    if (kind == 'bridge_syntax' and repository != 'Prithvi7007/crew-dev-bridge') or (kind == 'react_build' and repository != 'Prithvi7007/crew_games') or (kind == 'wedding_syntax' and repository != 'Prithvi7007/Wedding_Website_Final'):
-        raise ValueError('Check kind does not match repository')
-    if repository == 'Prithvi7007/Wedding_Website_Final' and kind not in {'pytest', 'wedding_syntax'}:
+    if kind not in checks_by_repo[repository]:
         raise ValueError('Check kind does not match repository')
     snapshot = QUEUE / 'snapshots' / job_id
     if not snapshot.is_dir():
@@ -89,6 +93,10 @@ def execute(ticket: dict) -> dict:
             cmd, cwd = ['/opt/wedding-venv/bin/python', '-m', 'compileall', '-q', 'app', 'tests', 'wsgi.py'], working
         elif kind == 'bridge_syntax':
             cmd, cwd = ['python', '-m', 'compileall', '-q', 'bridge', 'host', 'runner', 'tests'], working
+        elif kind == 'career_test':
+            cmd, cwd = ['node', '--test'], working
+        elif kind == 'career_syntax':
+            cmd, cwd = ['node', '--check', 'server.mjs'], working
         else:
             frontend = working / 'frontend'
             (frontend / 'node_modules').symlink_to('/opt/frontend/node_modules', target_is_directory=True)
