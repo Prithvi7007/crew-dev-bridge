@@ -24,6 +24,11 @@ FIELDS = {
     "vault_finish": ("upload_id",),
     "vault_cancel": ("upload_id",),
     "vault_delete": ("filename", "expected_sha256"),
+    "lab_capabilities": (),
+    "lab_submit": ("filename", "mode"),
+    "lab_status": ("job_id",),
+    "lab_search": ("job_id", "query"),
+    "lab_report": ("job_id",),
 }
 
 
