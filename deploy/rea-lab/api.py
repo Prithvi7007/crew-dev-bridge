@@ -7,6 +7,8 @@ Results are evidence, not proof that any code path executed.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+from functools import lru_cache
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -42,6 +44,17 @@ EXTS = (".apk", ".xapk", ".aab", ".jar", ".zip", ".asar")
 MODES = ("inventory", "android", "native")
 _LOCK = threading.Lock()
 _ACTIVE: str | None = None
+_INDEX_ACTIVE: str | None = None
+
+
+@lru_cache(maxsize=1)
+def intelligence():
+    """Load only the installed sibling module (works in offline test imports)."""
+    path = Path(__file__).with_name("intelligence.py")
+    spec = importlib.util.spec_from_file_location("rea_lab_intelligence", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class LabError(Exception):
@@ -152,7 +165,7 @@ def select_apk(path, workspace):
 
 
 
-def run_android_per_dex(apk, workspace, source_dir, nested_entry, env):
+def run_android_per_dex(apk, workspace, source_dir, nested_entry, env, progress=None):
     """Bounded per-DEX JADX passes; returns None if the APK has no root DEX."""
     if not zipfile.is_zipfile(apk):
         return None
@@ -169,8 +182,15 @@ def run_android_per_dex(apk, workspace, source_dir, nested_entry, env):
 
         dex.sort(key=lambda item: (dex_order(item), item.filename))
         records = []
+        if progress:
+            progress({"state": "running", "strategy": "individual_dex",
+                      "dex_total": len(dex), "dex_finished": 0})
         begin = time.monotonic()
         for index, item in enumerate(dex, 1):
+            if progress:
+                progress({"state": "running", "strategy": "individual_dex",
+                          "dex_total": len(dex), "dex_finished": len(records),
+                          "current_dex": item.filename})
             remaining = TIMEOUT_SECONDS - (time.monotonic() - begin)
             if remaining <= 0:
                 records.append({"entry": item.filename, "error": "time_budget_exhausted"})
@@ -200,6 +220,11 @@ def run_android_per_dex(apk, workspace, source_dir, nested_entry, env):
                 break
             finally:
                 dex_file.unlink(missing_ok=True)
+                if progress:
+                    progress({"state": "running", "strategy": "individual_dex",
+                              "dex_total": len(dex), "dex_finished": len(records),
+                              "current_dex": None,
+                              "files_recovered": sum(r.get("decompiled_files", 0) for r in records)})
 
     file_count = sum(record.get("decompiled_files", 0) for record in records)
     succeeded = len(records) == len(dex) and all(
@@ -256,7 +281,7 @@ def run_native(path, workspace):
             "native_decompilation": "unavailable" if not GHIDRA else "separate_provider_required"}
 
 
-def run_android(path, workspace, out):
+def run_android(path, workspace, out, progress=None):
     apk, nested_entry = select_apk(path, workspace)
     source_dir = out / "sources"
     source_dir.mkdir()
@@ -278,9 +303,11 @@ def run_android(path, workspace, out):
     env["HOME"] = str(home)
     env.update({name: str(directory) for name, directory in xdg_dirs.items()})
     env["JAVA_TOOL_OPTIONS"] = f"-Xmx{JADX_HEAP_MIB}m -Duser.home={home}"
+    metadata = intelligence().apk_metadata(apk)
     if apk.stat().st_size >= DEX_FIRST_APK_BYTES:
-        result = run_android_per_dex(apk, workspace, source_dir, nested_entry, env)
+        result = run_android_per_dex(apk, workspace, source_dir, nested_entry, env, progress)
         if result is not None:
+            result["static_inventory"] = metadata
             return result
     try:
         p = subprocess.run(command, cwd=workspace, env=env, capture_output=True,
@@ -294,6 +321,7 @@ def run_android(path, workspace, out):
     return {"base_apk_entry": nested_entry, "jadx_exit_code": p.returncode,
             "jadx_heap_mib": JADX_HEAP_MIB,
             "out_of_memory": "java.lang.OutOfMemoryError" in logs,
+            "static_inventory": metadata,
             "decompiled_files": file_count, "log_tail": logs[-3000:],
             "warning": "Decompiled source is approximate and is not original source."}
 
@@ -311,12 +339,18 @@ def run_job(job_id, filename, mode):
         with tempfile.TemporaryDirectory(dir="/work", prefix="rea-lab-") as tmp:
             workspace = Path(tmp)
             if mode == "android":
-                details = run_android(source, workspace, path)
+                details = run_android(source, workspace, path,
+                                      lambda p: write_json(path / "progress.json", p))
             elif mode == "native":
                 details = run_native(source, workspace)
             else:
                 details = archive_inventory(source)
         data["state"] = "completed"
+        if mode == "android":
+            count = details.get("decompiled_files", 0)
+            code = details.get("jadx_exit_code")
+            data["analysis_result"] = ("clean" if count > 0 and code == 0
+                                       else "partial" if count > 0 else "failed")
         data["finished_epoch"] = int(time.time())
         write_json(path / "report.json", {
             "artifact": filename, "artifact_sha256": data["sha256"],
@@ -333,6 +367,67 @@ def run_job(job_id, filename, mode):
         with _LOCK:
             if _ACTIVE == job_id:
                 _ACTIVE = None
+
+
+def index_state(job_id):
+    job = read_job(job_id)
+    if job["mode"] != "android" or job["state"] != "completed":
+        raise LabError("index_requires_completed_android_job")
+    root = RESULTS / job_id
+    if (root / "intelligence.sqlite").is_file():
+        status_file = root / "index.json"
+        if status_file.is_file():
+            return {"ok": True, **json.loads(status_file.read_text(encoding="utf-8"))}
+        return {"ok": True, "state": "ready"}
+    status_file = root / "index.json"
+    if status_file.is_file():
+        return {"ok": True, **json.loads(status_file.read_text(encoding="utf-8"))}
+    return {"ok": True, "state": "not_started"}
+
+
+def _build_index(job_id):
+    global _INDEX_ACTIVE
+    root = RESULTS / job_id
+    try:
+        intelligence().build_index(root, lambda p: write_json(root / "index.json", p))
+    except Exception:
+        write_json(root / "index.json", {"state": "failed", "error": "index_failed"})
+    finally:
+        with _LOCK:
+            if _INDEX_ACTIVE == job_id:
+                _INDEX_ACTIVE = None
+
+
+def start_index(job_id):
+    global _INDEX_ACTIVE
+    status = index_state(job_id)
+    if status["state"] == "ready":
+        return status
+    with _LOCK:
+        if _INDEX_ACTIVE == job_id:
+            return {"ok": True, "state": "building", "job_id": job_id}
+        if _ACTIVE is not None or _INDEX_ACTIVE is not None:
+            raise LabError("analysis_busy")
+        _INDEX_ACTIVE = job_id
+        write_json(RESULTS / job_id / "index.json", {"state": "building", "files_indexed": 0})
+        threading.Thread(target=_build_index, args=(job_id,), daemon=True).start()
+    return {"ok": True, "state": "building", "job_id": job_id}
+
+
+def compact_summary(job_id, offset=0, limit=12):
+    job = read_job(job_id)
+    if job["state"] != "completed":
+        raise LabError("report_not_ready")
+    report_path = RESULTS / job_id / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    return {"job_id": job_id, **intelligence().compact_report(report, offset, limit)}
+
+
+def ready_index(job_id):
+    state = index_state(job_id)
+    if state["state"] != "ready":
+        raise LabError("index_not_ready")
+    return RESULTS / job_id
 
 
 def start_job(filename, mode):
@@ -461,7 +556,10 @@ class Handler(BaseHTTPRequestHandler):
                                "max_file_bytes": MAX_FILE_BYTES, "max_unpacked_bytes": MAX_UNPACK_BYTES,
                                "max_parallel_jobs": 1, "jadx": Path(JADX).is_file(),
                                "ghidra": bool(GHIDRA) and Path(GHIDRA).exists(),
-                               "runtime_execution": False})
+                               "runtime_execution": False,
+                               "source_index": True, "intelligence_packets": True,
+                               "static_dependency_graph": True, "dashboard": "/dashboard",
+                               "external_ai_execution": False})
         elif self.command == "GET" and parts == ["jobs"]:
             self.respond(200, list_jobs())
         elif self.command == "POST" and parts == ["jobs"]:
@@ -472,10 +570,39 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict) or set(data) != {"filename", "mode"}:
                 raise LabError("invalid_fields")
             self.respond(202, start_job(data["filename"], data["mode"]))
+        elif self.command == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "index":
+            self.respond(202, start_index(parts[1]))
         elif self.command == "GET" and len(parts) >= 2 and parts[0] == "jobs":
             job_id = parts[1]
             if len(parts) == 2:
-                self.respond(200, {"ok": True, **read_job(job_id)})
+                status = read_job(job_id)
+                progress_file = RESULTS / job_id / "progress.json"
+                if progress_file.is_file():
+                    status["progress"] = json.loads(progress_file.read_text(encoding="utf-8"))
+                self.respond(200, {"ok": True, **status})
+            elif len(parts) == 3 and parts[2] == "summary":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"offset", "limit"}:
+                    raise LabError("invalid_pagination")
+                self.respond(200, compact_summary(job_id, int(qs["offset"][0]), int(qs["limit"][0])))
+            elif len(parts) == 3 and parts[2] == "index":
+                self.respond(200, index_state(job_id))
+            elif len(parts) == 3 and parts[2] == "index-search":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"q"} or len(qs["q"]) != 1:
+                    raise LabError("invalid_query")
+                self.respond(200, intelligence().indexed_search(ready_index(job_id), qs["q"][0]))
+            elif len(parts) == 3 and parts[2] == "graph":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"q"} or len(qs["q"]) != 1:
+                    raise LabError("invalid_query")
+                self.respond(200, intelligence().dependency_graph(ready_index(job_id), qs["q"][0]))
+            elif len(parts) == 3 and parts[2] == "investigate":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"q", "focus"} or any(len(x) != 1 for x in qs.values()):
+                    raise LabError("invalid_query")
+                self.respond(200, intelligence().investigate(
+                    ready_index(job_id), qs["q"][0], qs["focus"][0]))
             elif len(parts) == 3 and parts[2] == "report":
                 if read_job(job_id)["state"] != "completed":
                     raise LabError("report_not_ready")
@@ -496,7 +623,19 @@ class Handler(BaseHTTPRequestHandler):
             raise LabError("not_found")
 
     def do_GET(self):
-        self.safe_dispatch()
+        if urlsplit(self.path).path == "/dashboard":
+            # Dashboard shell only. All evidence endpoints still require token auth.
+            raw = Path(__file__).with_name("dashboard.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+        else:
+            self.safe_dispatch()
 
     def do_POST(self):
         self.safe_dispatch()

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REA Investigator — Private Lab</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,Arial;background:#0b1120;color:#e5edf9}
+*{box-sizing:border-box}body{margin:0;min-height:100vh}header{padding:20px 26px;border-bottom:1px solid #25324a;display:flex;gap:18px;align-items:center;background:#121b2d}
+mark{background:#204a66;color:#c0effa;border-radius:10px;padding:5px 9px}h1{font-size:21px;margin:0}h2{font-size:17px;margin:0 0 12px}h3{font-size:14px}small{color:#9aaec8}
+main{padding:24px;max-width:1460px;margin:auto;display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px}
+section,.panel{border:1px solid #2d3951;border-radius:14px;background:#121b2c;padding:18px;min-width:0}aside{display:flex;flex-direction:column;gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.stack{display:flex;flex-direction:column;gap:12px}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+label{font-size:13px;color:#bac9dc}input,select,button,textarea{font:inherit;border:1px solid #3d526f;border-radius:8px;padding:9px;background:#0a1425;color:#eff5ff;min-width:0}
+input{width:100%}button{cursor:pointer;background:#1b4160;border-color:#4a7091}button:hover{background:#245775}button:disabled{opacity:.45;cursor:default}
+pre{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:#08111d;padding:13px;border-radius:8px;max-height:380px;overflow:auto}
+#jobs button{display:block;width:100%;margin:6px 0;text-align:left;overflow-wrap:anywhere}.muted{color:#98acc6}
+.metric{padding:12px;border-radius:10px;background:#0a1425}.metric b{display:block;font-size:23px}.metric small{display:block}
+#graph{width:100%;height:360px;border-radius:10px;background:#08111d}
+a{color:#83d2fd}#notice{min-height:24px;color:#f2ce9d}
+@media(max-width:800px){main{grid-template-columns:1fr;padding:12px}header{padding:12px}section{padding:13px}}
+</style></head>
+<body><header><h1>◈ REA Investigator</h1><mark>PRIVATE STATIC LAB</mark><small>Offline worker · Evidence-grounded analysis · No app execution</small></header>
+<main>
+<aside>
+<section class="stack"><h2>Private access</h2><label for="token">REA Lab token (kept in this tab's memory only)</label>
+<input id="token" type="password" autocomplete="off" placeholder="Paste local token">
+<button id="connect">Connect &amp; list investigations</button><small>Connect using an SSH tunnel to VPS loopback port 18766. Never share the token publicly.</small><p id="notice" role="status"></p></section>
+<section><h2>Investigations</h2><div id="jobs" class="stack muted">Connect to load jobs</div></section>
+<section><h2>Privacy &amp; scope</h2><small>All evidence is treated as untrusted static data. No APK/device execution, no externally hosted model invocation, and no guarantee that reconstructed code reflects runtime behavior.</small></section>
+</aside>
+<div class="stack">
+<section><h2 id="jobtitle">Choose an investigation</h2><div id="metrics" class="grid"></div><pre id="progress">No investigation selected.</pre></section>
+<div class="grid">
+<section class="stack"><h2>Investigation report</h2>
+<div class="row"><button id="refresh">Refresh status</button><button id="summary">Summary</button><button id="older">Next DEX page</button></div>
+<pre id="report">Report pages exclude long log tails and preserve error classification.</pre></section>
+<section class="stack"><h2>Code intelligence index</h2>
+<div class="row"><button id="build">Build / resume index</button><button id="indexstatus">Index status</button></div>
+<pre id="index">Indexes metadata, code symbols, imports and a bounded full-text corpus. Existing Ring evidence can be indexed without decompiling again.</pre></section>
+</div>
+<div class="grid">
+<section class="stack"><h2>Search source</h2>
+<label for="term">Class, function, symbol, or keyword</label><input id="term" placeholder="LiveSessionConnector">
+<div class="row"><button id="search">Indexed search</button><button id="raw">Original source search</button></div>
+<pre id="matches">Cited search results appear here.</pre>
+<label for="sourcefile">Source path from a search result</label><input id="sourcefile" placeholder="dex_013/sources/…/JawsLiveSession.java">
+<div class="row"><label for="line">Line</label><input id="line" type="number" value="1" min="1" style="max-width:90px"><button id="open">Read source lines</button></div>
+<pre id="source">Source is shown as plain text, never executed.</pre></section>
+<section class="stack"><h2>AI-ready evidence investigator</h2>
+<label for="question">Question</label><input id="question" placeholder="How is the live streaming session established?">
+<div class="row"><select id="focus"><option value="overview">Overview</option><option value="architecture">Architecture</option><option value="call_flow">Call flow</option><option value="security">Security</option></select>
+<button id="investigate">Retrieve evidence packet</button></div>
+<pre id="packet">The packet contains candidate evidence with file/line citations for ChatGPT to reason about. No hidden external LLM is called.</pre>
+<h3>Static dependency graph</h3><div class="row"><button id="drawgraph">Graph matched imports</button></div>
+<svg id="graph" role="img" aria-label="Static dependency relationships"></svg>
+<small>Arrows mean Java imports, not verified runtime calls.</small></section>
+</div></div></main>
+<script>
+"use strict";
+let token="",job="",offset=0;
+const $=id=>document.getElementById(id);
+const show=(id,value)=>{$(id).textContent=typeof value==="string"?value:JSON.stringify(value,null,2)};
+async function req(path,method="GET"){
+ if(!token)throw Error("Enter the private token and connect first");
+ const response=await fetch(path,{method,headers:{"X-REA-LAB-TOKEN":token},cache:"no-store"});
+ let body=await response.json();if(!response.ok||body.ok===false)throw Error(body.error||"Request failed");
+ return body;
+}
+async function safe(action){try{$("notice").textContent="";await action()}catch(e){$("notice").textContent=e.message}}
+function selected(){if(!job)throw Error("Select a job first");return "/jobs/"+encodeURIComponent(job)}
+function query(path,key,value){return path+"?"+key+"="+encodeURIComponent(value)}
+$("connect").onclick=()=>safe(async()=>{
+ token=$("token").value.trim();$("token").value="";
+ const data=await req("/jobs");$("jobs").replaceChildren();
+ for(const item of data.jobs||[]){
+  const button=document.createElement("button");
+  button.textContent=(item.artifact||item.job_id)+" · "+item.mode+" · "+item.state;
+  button.onclick=()=>safe(async()=>{job=item.job_id;offset=0;$("jobtitle").textContent=(item.artifact||"Investigation")+" · "+job;await status();await summary();await indexstatus()});
+  $("jobs").appendChild(button);
+ }
+ if(!data.jobs?.length)show("jobs","No saved investigations");
+});
+async function status(){
+ const data=await req(selected());
+ $("metrics").replaceChildren();
+ for(const [label,value] of [["Job state",data.state],["Result",data.analysis_result||"pending"],["DEX finished",data.progress?.dex_finished??"—"],["Files recovered",data.progress?.files_recovered??"—"]]){
+  const box=document.createElement("div");box.className="metric";
+  const number=document.createElement("b");number.textContent=String(value);
+  const desc=document.createElement("small");desc.textContent=label;
+  box.append(number,desc);$("metrics").appendChild(box);
+ }
+ show("progress",data);
+}
+async function summary(){
+ const data=await req(selected()+"/summary?offset="+offset+"&limit=10");
+ show("report",data);if(data.next_offset===null)$("older").disabled=true;
+ else $("older").disabled=false;
+}
+async function indexstatus(){show("index",await req(selected()+"/index"))}
+$("refresh").onclick=()=>safe(status);
+$("summary").onclick=()=>safe(()=>{offset=0;return summary()});
+$("older").onclick=()=>safe(async()=>{offset+=10;await summary()});
+$("build").onclick=()=>safe(async()=>{show("index",await req(selected()+"/index","POST"))});
+$("indexstatus").onclick=()=>safe(indexstatus);
+$("search").onclick=()=>safe(async()=>{const data=await req(query(selected()+"/index-search","q",$("term").value));show("matches",data)});
+$("raw").onclick=()=>safe(async()=>{const data=await req(query(selected()+"/search","q",$("term").value));show("matches",data)});
+$("open").onclick=()=>safe(async()=>{const path=selected()+"/source?file="+encodeURIComponent($("sourcefile").value)+"&line="+encodeURIComponent($("line").value);show("source",await req(path))});
+$("investigate").onclick=()=>safe(async()=>{
+ const path=selected()+"/investigate?q="+encodeURIComponent($("question").value)+"&focus="+encodeURIComponent($("focus").value);
+ show("packet",await req(path));
+});
+$("drawgraph").onclick=()=>safe(async()=>{
+ const data=await req(query(selected()+"/graph","q",$("term").value||$("question").value));
+ const svg=$("graph");svg.replaceChildren();const NS="http://www.w3.org/2000/svg";
+ const edges=data.edges.slice(0,12);svg.setAttribute("viewBox","0 0 680 "+Math.max(140,edges.length*35+30));
+ for(let i=0;i<edges.length;i++){
+  const e=edges[i],y=30+i*35;
+  const line=document.createElementNS(NS,"line");line.setAttribute("x1","300");line.setAttribute("y1",y-4);line.setAttribute("x2","340");line.setAttribute("y2",y-4);line.setAttribute("stroke","#79c8eb");svg.appendChild(line);
+  for(const [value,x,anchor] of [[e.source_file,292,"end"],[e.target_symbol,348,"start"]]){
+   const label=document.createElementNS(NS,"text");label.setAttribute("x",x);label.setAttribute("y",y);
+   label.setAttribute("fill","#dce9f8");label.setAttribute("font-size","10");label.setAttribute("text-anchor",anchor);
+   label.textContent=value.length>47?"…"+value.slice(-45):value;svg.appendChild(label);
+  }
+ }
+ if(!edges.length){const text=document.createElementNS(NS,"text");text.setAttribute("x","20");text.setAttribute("y","50");text.setAttribute("fill","#bac9dc");text.textContent="No static import edges matched.";svg.appendChild(text)}
+});
+</script></body></html>
