@@ -31,6 +31,12 @@ FIELDS = {
     "lab_report": ("job_id",),
     "lab_source": ("job_id", "source_path", "line"),
     "lab_list": (),
+    "lab_summary": ("job_id", "offset", "limit"),
+    "lab_index": ("job_id",),
+    "lab_index_status": ("job_id",),
+    "lab_index_search": ("job_id", "query"),
+    "lab_graph": ("job_id", "query"),
+    "lab_investigate": ("job_id", "query", "focus"),
 }
 
 

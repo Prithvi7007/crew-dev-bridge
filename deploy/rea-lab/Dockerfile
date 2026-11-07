@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm /tmp/jadx.zip \
     && test -x /opt/jadx/bin/jadx
 
-COPY api.py /opt/rea-lab/api.py
+COPY api.py intelligence.py dashboard.html /opt/rea-lab/
 RUN mkdir -p /results /work && chown -R 65534:1000 /results /work
 USER 65534:1000
 WORKDIR /opt/rea-lab

@@ -86,3 +86,60 @@ Example workflow:
 **Security:** never put secrets or unauthorized data in the sample. Uploaded
 samples and decompiled outputs are untrusted. No Docker socket, unbounded
 remote shell, arbitrary filesystem paths or REA tool calls are delegated.
+
+## Integrated REA Intelligence release (single reviewed upgrade)
+
+This is one release covering operational progress, paginated evidence reports,
+search indexing, static dependency graphs, analyst evidence packets, structural
+APK/ELF inventory, and a local private dashboard. It works against existing
+persisted Android investigations (such as Ring) without rerunning JADX.
+
+**Privacy and correctness boundaries:**
+- The worker remains offline, read-only against the vault, rootless and limited
+  to 2300m RAM/0.65 CPU. It never executes APKs or opens a device camera.
+- Existing source evidence and reports stay in `lab_evidence`. The index is
+  SQLite in each job's evidence directory and has bounded full-text storage
+  (96 MiB source text, up to 150,000 files). The symbol/import inventory may
+  be broader than full-text; use original source search for unmatched lines.
+- Progress is updated after each DEX pass, not within an active JADX subprocess.
+- Analysis outcomes distinguish `clean`, `partial` and `failed`. JADX exit
+  code 3 can produce thousands of files while containing class errors.
+- A dependency graph depicts **static imports**, not dynamic call traces.
+- A security "finding" is a heuristic signal, never proof of vulnerability.
+- Manifest presence, resource table presence, native libraries and ABIs are
+  inventoried. Binary AndroidManifest permission decoding, resources.arsc
+  decoding, native Ghidra decompilation and runtime tracing are **not** available
+  yet. Existing native mode supports safe ELF header/dynamic-table inspection.
+- ChatGPT is the reasoning model: `rea_lab_investigate` returns bounded,
+  file/line cited evidence for AI analysis. No LLM executes inside REA, no
+  external service receives the code, and there is no autonomous deployment.
+
+**Reviewed upgrade** after merged PR and local branch update:
+
+```bash
+cd /opt/crew-dev-bridge
+git checkout main
+git pull --ff-only origin main
+sudo bash deploy/rea-lab/upgrade-intelligence.sh
+```
+
+The script checks the reviewed checkout, backs up existing REA-only files,
+rebuilds only the REA worker, refreshes the REA relay and CREW bridge, validates
+authenticated capabilities, and preserves all evidence volumes. CREW MCP
+connection may briefly reconnect. It does **not** deploy other applications.
+
+**CREW tools after upgrade:** `rea_lab_summary(job_id,offset,limit)`,
+`rea_lab_index(job_id)`, `rea_lab_index_status(job_id)`,
+`rea_lab_index_search(job_id,query)`, `rea_lab_graph(job_id,query)`,
+`rea_lab_investigate(job_id,query,focus)`. Existing source and search APIs
+continue to work. Indexing is on-demand and asynchronous; check the index
+status before querying. Search fallback remains available without an index.
+
+**Dashboard:** The REA ingress remains reachable on VPS loopback
+`127.0.0.1:18766` only. From your laptop, use an authenticated SSH tunnel
+such as `ssh -N -L 18766:127.0.0.1:18766 user@your-vps`, then visit
+`http://localhost:18766/dashboard`. Paste the private token *into the
+local browser input only* (do not send it in chat). The browser keeps this
+token only in volatile tab memory; no `localStorage` or external assets.
+Only the dashboard shell is unauthenticated; every evidence request requires
+the token. Do not expose port 18766 on the public Internet.

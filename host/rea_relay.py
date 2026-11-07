@@ -38,7 +38,8 @@ ALLOWED_OPERATIONS = frozenset((
     "vault_list", "vault_info", "vault_begin", "vault_chunk",
     "vault_upload_status", "vault_finish", "vault_cancel", "vault_delete",
     "lab_capabilities", "lab_submit", "lab_status", "lab_search", "lab_report",
-    "lab_source", "lab_list",
+    "lab_source", "lab_list", "lab_summary", "lab_index", "lab_index_status",
+    "lab_index_search", "lab_graph", "lab_investigate",
 ))
 
 
@@ -217,7 +218,9 @@ def lab_request(operation: str, payload: dict) -> dict:
     if len(token) != 64:
         return {"ok": False, "error": "invalid_lab_token"}
     job_id = payload.get("job_id", "")
-    if operation in ("lab_status", "lab_report", "lab_search", "lab_source") and (
+    if operation in ("lab_status", "lab_report", "lab_search", "lab_source",
+                      "lab_summary", "lab_index", "lab_index_status",
+                      "lab_index_search", "lab_graph", "lab_investigate") and (
         not isinstance(job_id, str) or not LAB_JOB_PATTERN.fullmatch(job_id)
     ):
         return {"ok": False, "error": "invalid_job_id"}
@@ -238,6 +241,32 @@ def lab_request(operation: str, payload: dict) -> dict:
         endpoint = "/jobs/" + job_id
     elif operation == "lab_report":
         endpoint = "/jobs/" + job_id + "/report"
+    elif operation == "lab_summary":
+        offset, limit = payload.get("offset"), payload.get("limit")
+        if (type(offset) is not int or type(limit) is not int
+                or not 0 <= offset <= 150000 or not 1 <= limit <= 25):
+            return {"ok": False, "error": "invalid_pagination"}
+        endpoint = f"/jobs/{job_id}/summary?offset={offset}&limit={limit}"
+    elif operation == "lab_index_status":
+        endpoint = "/jobs/" + job_id + "/index"
+    elif operation == "lab_index":
+        endpoint = "/jobs/" + job_id + "/index"
+        params = b"{}"
+    elif operation in ("lab_index_search", "lab_graph", "lab_investigate"):
+        query = payload.get("query")
+        if (not isinstance(query, str) or not 2 <= len(query) <= 240
+                or any(ord(ch) < 32 for ch in query)):
+            return {"ok": False, "error": "invalid_query"}
+        if operation == "lab_index_search":
+            endpoint = "/jobs/" + job_id + "/index-search?q=" + quote(query, safe="")
+        elif operation == "lab_graph":
+            endpoint = "/jobs/" + job_id + "/graph?q=" + quote(query, safe="")
+        else:
+            focus = payload.get("focus")
+            if focus not in ("overview", "architecture", "call_flow", "security"):
+                return {"ok": False, "error": "invalid_focus"}
+            endpoint = ("/jobs/" + job_id + "/investigate?q=" + quote(query, safe="")
+                        + "&focus=" + quote(focus, safe=""))
     elif operation == "lab_source":
         source_path = payload.get("source_path")
         line = payload.get("line")
@@ -301,6 +330,12 @@ def handle(payload: object) -> dict:
         "lab_report": {"operation", "job_id"},
         "lab_source": {"operation", "job_id", "source_path", "line"},
         "lab_list": {"operation"},
+        "lab_summary": {"operation", "job_id", "offset", "limit"},
+        "lab_index": {"operation", "job_id"},
+        "lab_index_status": {"operation", "job_id"},
+        "lab_index_search": {"operation", "job_id", "query"},
+        "lab_graph": {"operation", "job_id", "query"},
+        "lab_investigate": {"operation", "job_id", "query", "focus"},
     }
     if operation not in allowed_fields:
         return {"ok": False, "error": "operation_not_allowed"}
