@@ -14,6 +14,8 @@ services:
     mem_limit: 2300m
     cpus: "0.65"
     networks: [lab_internal]
+    environment:
+      REA_WEB_CAPTURE_URL: http://web_capture:8767/capture
     volumes:
       - ../rea-lite/managed:/vault:ro
       - ./.token:/run/secrets/rea_lab_token:ro
@@ -26,6 +28,31 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 30s
+      retries: 3
+
+  web_capture:
+    build:
+      context: .
+      dockerfile: WebCapture.Dockerfile
+    image: rea-web-capture:1
+    restart: unless-stopped
+    read_only: true
+    user: "65534:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 48
+    mem_limit: 192m
+    cpus: "0.25"
+    networks: [lab_access, lab_internal]
+    volumes:
+      - ./.token:/run/secrets/rea_lab_token:ro
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=16m
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket;s=socket.create_connection(('127.0.0.1',8767),3);s.close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
       retries: 3
 
   ingress:

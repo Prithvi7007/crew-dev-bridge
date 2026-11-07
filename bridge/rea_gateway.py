@@ -37,6 +37,8 @@ FIELDS = {
     "lab_index_search": ("job_id", "query"),
     "lab_graph": ("job_id", "query"),
     "lab_investigate": ("job_id", "query", "focus"),
+    "lab_web_submit": ("url",),
+    "lab_web_compare": ("job_id", "other_job_id"),
 }
 
 

@@ -143,3 +143,74 @@ local browser input only* (do not send it in chat). The browser keeps this
 token only in volatile tab memory; no `localStorage` or external assets.
 Only the dashboard shell is unauthenticated; every evidence request requires
 the token. Do not expose port 18766 on the public Internet.
+
+## Public-web intelligence (optional upgrade)
+
+REA now also supports **public HTTPS website snapshots** through a separately
+networked, non-root fetcher. The APK/JADX worker retains only its existing
+`lab_internal` Docker network with no Internet route. The new
+`web_capture` sidecar has Internet egress but cannot access the REA results
+volume, vault or Docker socket. Worker-to-sidecar requests are authenticated
+with the same private REA token on their internal Docker network.
+
+Captured content is restricted to a publicly accessible HTTPS entry page,
+same-origin external JavaScript and bounded inline JavaScript. It **does not**
+execute scripts, follow page links, log in, use cookies, call private site APIs,
+perform dynamic browser rendering or bypass CAPTCHAs. The sidecar validates URL
+hosts and redirects, resolves DNS itself, rejects non-global addresses (including
+any mixed public/private answer), and connects to the validated address with
+TLS certificate/hostname verification. No custom destination ports are allowed.
+
+The snapshot saves raw source in the job evidence volume. JavaScript is also
+split into synthetic, 512-character indexed lines, because minified bundles
+often have no line breaks. Evidence citations under `normalized/*.js.txt`
+refer to these synthetic lines, not original source line numbers.
+
+The offline intelligence pass extracts candidate API-route references,
+technology indicators, feature/usage/feedback markers, and asset hashes.
+All findings cite a saved file and line. **Client-side strings are not proof
+of reachable APIs, backend behavior, actual model provider or active features.**
+No OpenAI/Anthropic model is run inside REA.
+
+### New MCP tools and dashboard
+
+- `rea_web_submit(url)`: create a one-time public HTTPS capture; returns job ID.
+- `rea_lab_status(job_id)`: poll capture status.
+- `rea_lab_summary(job_id, offset, limit)`: paginated API references and technology
+  evidence (same tool supports saved Android investigations).
+- `rea_lab_index(job_id)`: build the existing SQLite FTS evidence index.
+- `rea_lab_index_search(job_id, query)`, `rea_lab_source(job_id, source_path, line)`,
+  `rea_lab_investigate(job_id, query)`: explore captured source evidence.
+- `rea_lab_graph(job_id, query)`: for web jobs, returns **static client-route
+  references**, not actual network traffic; for APKs, static Java import edges.
+- `rea_web_compare(older_job_id, newer_job_id)`: compare saved client API-route
+  references and technology indicators. Static diff does not prove a backend change.
+
+The existing private `/dashboard` page adds a public URL capture form and
+saved web snapshot comparison. No new public port or token exposure.
+
+### Deployment
+
+After the reviewed PR is merged into `main`, run the code-only upgrade using
+the CREW MCP VPS terminal (or one SSH terminal command):
+
+```bash
+cd /opt/crew-dev-bridge
+git checkout main
+git pull --ff-only origin main
+sudo bash deploy/rea-lab/upgrade-web.sh
+```
+
+The installer backs up REA code/config and the relay, rebuilds only the
+isolated REA `web_capture` and `lab` containers, and refreshes the dedicated
+REA relay and bridge. It does **not** delete or reinitialize evidence volumes,
+the managed APK vault, or other applications. After restarting the bridge,
+refresh the CREW plugin to reveal the new MCP tools.
+
+### Limits
+
+At most one capture job at a time, 40 same-origin script files, 750 kB per
+JavaScript asset, 1.5 MB for HTML, ~12 MB total source bytes, and a bounded
+response size. External CDNs and dynamically loaded chunks are not captured.
+Captures are snapshots of public client code only. Many websites may reject
+automated fetching with HTTP 403; these cases are reported, not bypassed.

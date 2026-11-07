@@ -199,6 +199,25 @@ def rea_lab_submit(filename: str, mode: str = "android") -> dict:
 
 
 @mcp.tool()
+def rea_web_submit(url: str) -> dict:
+    """Snapshot public HTTPS HTML and same-origin JS for offline REA analysis.
+
+    No browsing as a logged-in user, dynamic JS execution, private network
+    access or interaction with website APIs. Returns a job ID.
+    """
+    return rea_gateway.call("lab_web_submit", url=url)
+
+
+@mcp.tool()
+def rea_web_compare(older_job_id: str, newer_job_id: str) -> dict:
+    """Compare saved public-web snapshots: API routes and technology indicators.
+
+    This is static client-code diffing, not proof of backend changes.
+    """
+    return rea_gateway.call("lab_web_compare", job_id=older_job_id, other_job_id=newer_job_id)
+
+
+@mcp.tool()
 def rea_lab_status(job_id: str) -> dict:
     """Read investigation progress, artifact fingerprint, and failure status."""
     return rea_gateway.call("lab_status", job_id=job_id)

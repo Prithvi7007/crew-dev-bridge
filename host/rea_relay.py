@@ -40,6 +40,7 @@ ALLOWED_OPERATIONS = frozenset((
     "lab_capabilities", "lab_submit", "lab_status", "lab_search", "lab_report",
     "lab_source", "lab_list", "lab_summary", "lab_index", "lab_index_status",
     "lab_index_search", "lab_graph", "lab_investigate",
+    "lab_web_submit", "lab_web_compare",
 ))
 
 
@@ -220,7 +221,8 @@ def lab_request(operation: str, payload: dict) -> dict:
     job_id = payload.get("job_id", "")
     if operation in ("lab_status", "lab_report", "lab_search", "lab_source",
                       "lab_summary", "lab_index", "lab_index_status",
-                      "lab_index_search", "lab_graph", "lab_investigate") and (
+                      "lab_index_search", "lab_graph", "lab_investigate",
+                      "lab_web_compare") and (
         not isinstance(job_id, str) or not LAB_JOB_PATTERN.fullmatch(job_id)
     ):
         return {"ok": False, "error": "invalid_job_id"}
@@ -237,6 +239,19 @@ def lab_request(operation: str, payload: dict) -> dict:
             return {"ok": False, "error": "invalid_mode"}
         endpoint = "/jobs"
         params = json.dumps({"filename": filename, "mode": mode}).encode()
+    elif operation == "lab_web_submit":
+        url = payload.get("url")
+        if (not isinstance(url, str) or not 12 <= len(url) <= 2048
+                or not url.startswith("https://")
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in url)):
+            return {"ok": False, "error": "invalid_web_url"}
+        endpoint = "/jobs/web"
+        params = json.dumps({"url": url}).encode()
+    elif operation == "lab_web_compare":
+        other = payload.get("other_job_id")
+        if not isinstance(other, str) or not LAB_JOB_PATTERN.fullmatch(other):
+            return {"ok": False, "error": "invalid_job_id"}
+        endpoint = "/jobs/" + job_id + "/compare?other=" + other
     elif operation == "lab_status":
         endpoint = "/jobs/" + job_id
     elif operation == "lab_report":
@@ -336,6 +351,8 @@ def handle(payload: object) -> dict:
         "lab_index_search": {"operation", "job_id", "query"},
         "lab_graph": {"operation", "job_id", "query"},
         "lab_investigate": {"operation", "job_id", "query", "focus"},
+        "lab_web_submit": {"operation", "url"},
+        "lab_web_compare": {"operation", "job_id", "other_job_id"},
     }
     if operation not in allowed_fields:
         return {"ok": False, "error": "operation_not_allowed"}

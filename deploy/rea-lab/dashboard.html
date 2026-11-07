@@ -17,24 +17,31 @@ pre{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre
 a{color:#83d2fd}#notice{min-height:24px;color:#f2ce9d}
 @media(max-width:800px){main{grid-template-columns:1fr;padding:12px}header{padding:12px}section{padding:13px}}
 </style></head>
-<body><header><h1>◈ REA Investigator</h1><mark>PRIVATE STATIC LAB</mark><small>Offline worker · Evidence-grounded analysis · No app execution</small></header>
+<body><header><h1>◈ REA Investigator</h1><mark>PRIVATE STATIC LAB</mark><small>Offline APK analysis · Isolated public-web capture · No target-code execution</small></header>
 <main>
 <aside>
 <section class="stack"><h2>Private access</h2><label for="token">REA Lab token (kept in this tab's memory only)</label>
 <input id="token" type="password" autocomplete="off" placeholder="Paste local token">
 <button id="connect">Connect &amp; list investigations</button><small>Connect using an SSH tunnel to VPS loopback port 18766. Never share the token publicly.</small><p id="notice" role="status"></p></section>
+<section class="stack"><h2>New web investigation</h2>
+<label for="weburl">Public HTTPS website URL</label>
+<input id="weburl" type="url" inputmode="url" placeholder="https://www.humanizeai.pro/ad" autocomplete="off">
+<button id="webcapture">Capture public HTML + JavaScript</button>
+<small>Downloads publicly served HTML and same-origin scripts through an isolated fetcher. No login, scripts executed, hidden backend access or anti-bot bypass. Source evidence is saved privately.</small>
+</section>
 <section><h2>Investigations</h2><div id="jobs" class="stack muted">Connect to load jobs</div></section>
-<section><h2>Privacy &amp; scope</h2><small>All evidence is treated as untrusted static data. No APK/device execution, no externally hosted model invocation, and no guarantee that reconstructed code reflects runtime behavior.</small></section>
+<section><h2>Privacy &amp; scope</h2><small>All evidence is treated as untrusted static data. No APK execution or active website interaction. Public website capture uses a separate fetcher; the evidence worker stays offline. No external model invocation. Source is untrusted and static.</small></section>
 </aside>
 <div class="stack">
 <section><h2 id="jobtitle">Choose an investigation</h2><div id="metrics" class="grid"></div><pre id="progress">No investigation selected.</pre></section>
 <div class="grid">
 <section class="stack"><h2>Investigation report</h2>
-<div class="row"><button id="refresh">Refresh status</button><button id="summary">Summary</button><button id="older">Next DEX page</button></div>
-<pre id="report">Report pages exclude long log tails and preserve error classification.</pre></section>
+<div class="row"><button id="refresh">Refresh status</button><button id="summary">Summary</button><button id="older">Next report page</button></div>
+<pre id="report">Reports cite recovered code, public JavaScript, or API-route references.</pre>
+<div class="stack"><label for="comparejob">Older website investigation ID</label><input id="comparejob" placeholder="32-character web job ID"><button id="compare">Compare older snapshot with selected web job</button></div></section>
 <section class="stack"><h2>Code intelligence index</h2>
 <div class="row"><button id="build">Build / resume index</button><button id="indexstatus">Index status</button></div>
-<pre id="index">Indexes metadata, code symbols, imports and a bounded full-text corpus. Existing Ring evidence can be indexed without decompiling again.</pre></section>
+<pre id="index">Indexes source symbols and bounded full-text evidence, including normalized minified JavaScript. APK files and web captures use the same searchable evidence system.</pre></section>
 </div>
 <div class="grid">
 <section class="stack"><h2>Search source</h2>
@@ -49,45 +56,61 @@ a{color:#83d2fd}#notice{min-height:24px;color:#f2ce9d}
 <div class="row"><select id="focus"><option value="overview">Overview</option><option value="architecture">Architecture</option><option value="call_flow">Call flow</option><option value="security">Security</option></select>
 <button id="investigate">Retrieve evidence packet</button></div>
 <pre id="packet">The packet contains candidate evidence with file/line citations for ChatGPT to reason about. No hidden external LLM is called.</pre>
-<h3>Static dependency graph</h3><div class="row"><button id="drawgraph">Graph matched imports</button></div>
+<h3>Static relationship graph</h3><div class="row"><button id="drawgraph">Graph references</button></div>
 <svg id="graph" role="img" aria-label="Static dependency relationships"></svg>
-<small>Arrows mean Java imports, not verified runtime calls.</small></section>
+<small>For Android, arrows mean imports. For websites, arrows mean static client API references. Neither proves runtime behavior.</small></section>
 </div></div></main>
 <script>
 "use strict";
 let token="",job="",offset=0;
 const $=id=>document.getElementById(id);
 const show=(id,value)=>{$(id).textContent=typeof value==="string"?value:JSON.stringify(value,null,2)};
-async function req(path,method="GET"){
+async function req(path,method="GET",body=null){
  if(!token)throw Error("Enter the private token and connect first");
- const response=await fetch(path,{method,headers:{"X-REA-LAB-TOKEN":token},cache:"no-store"});
+ const response=await fetch(path,{method,headers:{"X-REA-LAB-TOKEN":token,...(body===null?{}:{"Content-Type":"application/json"})},body:body===null?undefined:JSON.stringify(body),cache:"no-store"});
  let body=await response.json();if(!response.ok||body.ok===false)throw Error(body.error||"Request failed");
  return body;
 }
 async function safe(action){try{$("notice").textContent="";await action()}catch(e){$("notice").textContent=e.message}}
 function selected(){if(!job)throw Error("Select a job first");return "/jobs/"+encodeURIComponent(job)}
 function query(path,key,value){return path+"?"+key+"="+encodeURIComponent(value)}
-$("connect").onclick=()=>safe(async()=>{
- token=$("token").value.trim();$("token").value="";
+async function loadJobs(){
  const data=await req("/jobs");$("jobs").replaceChildren();
  for(const item of data.jobs||[]){
   const button=document.createElement("button");
   button.textContent=(item.artifact||item.job_id)+" · "+item.mode+" · "+item.state;
-  button.onclick=()=>safe(async()=>{job=item.job_id;offset=0;$("jobtitle").textContent=(item.artifact||"Investigation")+" · "+job;await status();await summary();await indexstatus()});
+  button.onclick=()=>safe(async()=>{
+    job=item.job_id;offset=0;$("jobtitle").textContent=(item.artifact||"Investigation")+" · "+job;
+    const current=await status();
+    if(current.state==="completed"){await summary();await indexstatus()}
+    else{show("report","Investigation is "+current.state+". Refresh when completed.");}
+  });
   $("jobs").appendChild(button);
  }
  if(!data.jobs?.length)show("jobs","No saved investigations");
+}
+$("connect").onclick=()=>safe(async()=>{token=$("token").value.trim();$("token").value="";await loadJobs()});
+$("webcapture").onclick=()=>safe(async()=>{
+ const url=$("weburl").value.trim();
+ if(!url.startsWith("https://"))throw Error("Enter a public HTTPS URL");
+ const result=await req("/jobs/web","POST",{url});
+ job=result.job_id;offset=0;
+ $("jobtitle").textContent="Web capture · "+job;
+ show("progress",result);show("report","Capture started. Refresh after completion.");
+ await loadJobs();
 });
 async function status(){
  const data=await req(selected());
  $("metrics").replaceChildren();
- for(const [label,value] of [["Job state",data.state],["Result",data.analysis_result||"pending"],["DEX finished",data.progress?.dex_finished??"—"],["Files recovered",data.progress?.files_recovered??"—"]]){
+ const stats=[["Mode",data.mode],["Job state",data.state],["Result",data.analysis_result||"pending"]];
+ if(data.mode==="android")stats.push(["DEX finished",data.progress?.dex_finished??"—"],["Files recovered",data.progress?.files_recovered??"—"]);
+ for(const [label,value] of stats){
   const box=document.createElement("div");box.className="metric";
   const number=document.createElement("b");number.textContent=String(value);
   const desc=document.createElement("small");desc.textContent=label;
   box.append(number,desc);$("metrics").appendChild(box);
  }
- show("progress",data);
+ show("progress",data);return data;
 }
 async function summary(){
  const data=await req(selected()+"/summary?offset="+offset+"&limit=10");
@@ -95,6 +118,10 @@ async function summary(){
  else $("older").disabled=false;
 }
 async function indexstatus(){show("index",await req(selected()+"/index"))}
+$("compare").onclick=()=>safe(async()=>{
+ const older=$("comparejob").value.trim();if(!/^[a-f0-9]{32}$/.test(older))throw Error("Invalid older web investigation ID");
+ show("report",await req("/jobs/"+older+"/compare?other="+encodeURIComponent(job)));
+});
 $("refresh").onclick=()=>safe(status);
 $("summary").onclick=()=>safe(()=>{offset=0;return summary()});
 $("older").onclick=()=>safe(async()=>{offset+=10;await summary()});
