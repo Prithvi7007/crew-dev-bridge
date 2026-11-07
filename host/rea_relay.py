@@ -38,6 +38,7 @@ ALLOWED_OPERATIONS = frozenset((
     "vault_list", "vault_info", "vault_begin", "vault_chunk",
     "vault_upload_status", "vault_finish", "vault_cancel", "vault_delete",
     "lab_capabilities", "lab_submit", "lab_status", "lab_search", "lab_report",
+    "lab_source", "lab_list",
 ))
 
 
@@ -216,13 +217,15 @@ def lab_request(operation: str, payload: dict) -> dict:
     if len(token) != 64:
         return {"ok": False, "error": "invalid_lab_token"}
     job_id = payload.get("job_id", "")
-    if operation in ("lab_status", "lab_report", "lab_search") and (
+    if operation in ("lab_status", "lab_report", "lab_search", "lab_source") and (
         not isinstance(job_id, str) or not LAB_JOB_PATTERN.fullmatch(job_id)
     ):
         return {"ok": False, "error": "invalid_job_id"}
     params = None
     if operation == "lab_capabilities":
         endpoint = "/capabilities"
+    elif operation == "lab_list":
+        endpoint = "/jobs"
     elif operation == "lab_submit":
         filename = payload.get("filename")
         mode = payload.get("mode")
@@ -235,6 +238,15 @@ def lab_request(operation: str, payload: dict) -> dict:
         endpoint = "/jobs/" + job_id
     elif operation == "lab_report":
         endpoint = "/jobs/" + job_id + "/report"
+    elif operation == "lab_source":
+        source_path = payload.get("source_path")
+        line = payload.get("line")
+        if (not isinstance(source_path, str) or not 1 <= len(source_path) <= 220
+                or source_path.startswith("/") or "\\" in source_path
+                or ".." in source_path.split("/") or type(line) is not int
+                or not 1 <= line <= 500_000):
+            return {"ok": False, "error": "invalid_source_request"}
+        endpoint = "/jobs/" + job_id + "/source?file=" + quote(source_path, safe="") + "&line=" + str(line)
     elif operation == "lab_search":
         query = payload.get("query")
         if not isinstance(query, str) or not 2 <= len(query) <= 80 or any(ord(c) < 32 for c in query):
@@ -287,6 +299,8 @@ def handle(payload: object) -> dict:
         "lab_status": {"operation", "job_id"},
         "lab_search": {"operation", "job_id", "query"},
         "lab_report": {"operation", "job_id"},
+        "lab_source": {"operation", "job_id", "source_path", "line"},
+        "lab_list": {"operation"},
     }
     if operation not in allowed_fields:
         return {"ok": False, "error": "operation_not_allowed"}

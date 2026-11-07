@@ -103,6 +103,29 @@ def test_jadx_command_is_shell_free_and_search_has_grounded_lines(workspace, mon
         lab.search_job(job_id, "\n")
 
 
+
+def test_source_excerpt_and_job_list_are_path_safe(workspace):
+    vault, reports, _ = workspace
+    job_id = "b" * 32
+    folder = reports / job_id
+    source_dir = folder / "sources" / "com" / "example"
+    source_dir.mkdir(parents=True)
+    (source_dir / "Test.java").write_text("class Test {}\nSafeEvidenceLine\n")
+    lab.write_json(folder / "status.json",
+                   {"state": "completed", "mode": "android",
+                    "job_id": job_id, "artifact": "app.apk", "started_epoch": 1})
+    result = lab.source_excerpt(job_id, "com/example/Test.java", 2)
+    assert result["lines"] == [{"line": 2, "text": "SafeEvidenceLine"}]
+    listed = lab.list_jobs()
+    assert listed["jobs"][0]["job_id"] == job_id
+    for invalid in ("../status.json", "/etc/passwd", "bad\\\\path.xml"):
+        with pytest.raises(lab.LabError):
+            lab.source_excerpt(job_id, invalid, 1)
+    (source_dir / "outside.java").symlink_to(folder / "status.json")
+    with pytest.raises(lab.LabError):
+        lab.source_excerpt(job_id, "com/example/outside.java", 1)
+
+
 def test_relay_auth_allowlist_and_validation(monkeypatch, tmp_path):
     secret = tmp_path / "token"
     secret.write_text("a" * 64)

@@ -287,6 +287,59 @@ def search_job(job_id, term):
     return {"ok": True, "matches": matches, "truncated": False, "files_scanned": scanned}
 
 
+
+def source_excerpt(job_id, filename, first_line):
+    """Bounded, path-safe read of a JADX-produced source file, never input vault."""
+    from pathlib import PurePosixPath
+    job = read_job(job_id)
+    if job["state"] != "completed" or job["mode"] != "android":
+        raise LabError("source_requires_completed_android_job")
+    if (not isinstance(filename, str) or not 1 <= len(filename) <= 220
+            or filename.startswith("/") or "\\" in filename
+            or not filename.lower().endswith((".java", ".kt", ".xml", ".json"))):
+        raise LabError("invalid_source_path")
+    rel = PurePosixPath(filename)
+    if any(part in (".", "..", "") for part in rel.parts):
+        raise LabError("invalid_source_path")
+    if type(first_line) is not int or not 1 <= first_line <= 500_000:
+        raise LabError("invalid_line_number")
+    base = (RESULTS / job_id / "sources").resolve()
+    target = base.joinpath(*rel.parts)
+    try:
+        resolved = target.resolve(strict=True)
+        if (not resolved.is_relative_to(base) or target.is_symlink()
+                or not resolved.is_file() or resolved.stat().st_size > 2 * 1024 * 1024):
+            raise LabError("invalid_source_file")
+    except (OSError, ValueError) as exc:
+        raise LabError("source_not_found") from exc
+    lines = []
+    with resolved.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, 1):
+            if number < first_line:
+                continue
+            if number >= first_line + 35:
+                break
+            lines.append({"line": number, "text": line.rstrip("\r\n")[:300]})
+    return {"ok": True, "job_id": job_id, "file": filename,
+            "first_line": first_line, "lines": lines}
+
+
+def list_jobs():
+    """List persisted investigation IDs without exposing full artifacts."""
+    jobs = []
+    for folder in RESULTS.iterdir():
+        if not folder.is_dir() or not JOB_ID.fullmatch(folder.name) or folder.is_symlink():
+            continue
+        try:
+            data = read_job(folder.name)
+            jobs.append({key: data.get(key) for key in
+                        ("job_id", "artifact", "mode", "state", "started_epoch", "finished_epoch")})
+        except (LabError, OSError, ValueError):
+            continue
+    jobs.sort(key=lambda item: item.get("started_epoch") or 0, reverse=True)
+    return {"ok": True, "jobs": jobs[:100], "truncated": len(jobs) > 100}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -316,6 +369,8 @@ class Handler(BaseHTTPRequestHandler):
                                "max_parallel_jobs": 1, "jadx": Path(JADX).is_file(),
                                "ghidra": bool(GHIDRA) and Path(GHIDRA).exists(),
                                "runtime_execution": False})
+        elif self.command == "GET" and parts == ["jobs"]:
+            self.respond(200, list_jobs())
         elif self.command == "POST" and parts == ["jobs"]:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 1 or length > 4096:
@@ -332,6 +387,11 @@ class Handler(BaseHTTPRequestHandler):
                 if read_job(job_id)["state"] != "completed":
                     raise LabError("report_not_ready")
                 self.respond(200, {"ok": True, **json.loads((RESULTS / job_id / "report.json").read_text())})
+            elif len(parts) == 3 and parts[2] == "source":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"file", "line"} or any(len(values) != 1 for values in qs.values()):
+                    raise LabError("invalid_source_request")
+                self.respond(200, source_excerpt(job_id, qs["file"][0], int(qs["line"][0])))
             elif len(parts) == 3 and parts[2] == "search":
                 qs = parse_qs(parsed.query)
                 if set(qs) != {"q"} or len(qs["q"]) != 1:

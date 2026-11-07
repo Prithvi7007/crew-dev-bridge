@@ -12,8 +12,9 @@ existing REA evidence. It does **not** run third-party APKs.
   release SHA-256), retaining searchable approximate Java/resources.
 - Native ELF library inventory and headers via `readelf`; reports it is **not**
   native function decompilation.
-- Persistent per-job status, source evidence, provenance, reports and line-based
-  search (up to 50 hits per query). Results are not deleted automatically.
+- Persistent per-job status, source evidence, provenance, reports, line-based
+  search (up to 50 hits per query), job listing, and bounded source-line retrieval.
+  Results are not deleted automatically.
 - Strict filename/job-ID allowlisting, one job at a time to avoid contention,
   private bearer auth, no dynamic app execution, no Internet route from worker.
 

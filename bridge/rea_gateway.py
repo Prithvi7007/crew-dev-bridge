@@ -29,6 +29,8 @@ FIELDS = {
     "lab_status": ("job_id",),
     "lab_search": ("job_id", "query"),
     "lab_report": ("job_id",),
+    "lab_source": ("job_id", "source_path", "line"),
+    "lab_list": (),
 }
 
 
