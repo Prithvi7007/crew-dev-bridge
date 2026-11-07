@@ -1,0 +1,29 @@
+[Unit]
+Description=CREW VPS terminal (explicit opt-in root command broker)
+After=network.target docker.service
+ConditionPathExists=/usr/local/lib/crew-vps-terminal/vps_terminal.py
+
+[Service]
+Type=simple
+User=root
+Group=986
+WorkingDirectory=/var/lib/crew-vps-terminal
+ExecStart=/usr/bin/python3 /usr/local/lib/crew-vps-terminal/vps_terminal.py
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=crew-vps-terminal
+RuntimeDirectoryMode=0770
+StateDirectory=crew-vps-terminal
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=false
+LimitNOFILE=8192
+# Deliberately not setting ProtectSystem / ProtectHome / PrivateNetwork:
+# full VPS administration is the explicitly selected capability.
+# The host root authority is isolated behind the Unix socket + peer UID check.
+# Do not bind this service to TCP or share its socket with other containers.
+
+[Install]
+WantedBy=multi-user.target
