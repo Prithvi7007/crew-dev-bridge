@@ -100,7 +100,10 @@ def test_jadx_command_is_shell_free_and_search_has_grounded_lines(workspace, mon
     home = scratch / "jadx-home"
     assert env["HOME"] == str(home)
     assert f"-Duser.home={home}" in env["JAVA_TOOL_OPTIONS"]
-    assert "-Xmx1536m" in env["JAVA_TOOL_OPTIONS"]
+    assert "-Xmx1792m" in env["JAVA_TOOL_OPTIONS"]
+    assert lab.JADX_HEAP_MIB == 1792
+    assert summary["jadx_heap_mib"] == 1792
+    assert summary["out_of_memory"] is False
     for name, relative in {
         "XDG_CONFIG_HOME": ".config",
         "XDG_CACHE_HOME": ".cache",
@@ -123,6 +126,22 @@ def test_jadx_command_is_shell_free_and_search_has_grounded_lines(workspace, mon
     with pytest.raises(lab.LabError):
         lab.search_job(job_id, "\n")
 
+
+
+def test_jadx_oom_is_reported_with_bounded_heap(workspace, monkeypatch):
+    vault, reports, scratch = workspace
+    sample = vault / "app.apk"
+    sample.write_bytes(b"dummy")
+    out = reports / "oom-job"
+    out.mkdir()
+    def fake_run(args, **kwargs):
+        assert kwargs["env"]["JAVA_TOOL_OPTIONS"].startswith("-Xmx1792m ")
+        return SimpleNamespace(returncode=1, stdout="", stderr="java.lang.OutOfMemoryError: Java heap space")
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+    result = lab.run_android(sample, scratch, out)
+    assert result["jadx_exit_code"] == 1
+    assert result["decompiled_files"] == 0
+    assert result["out_of_memory"] is True
 
 
 def test_source_excerpt_and_job_list_are_path_safe(workspace):

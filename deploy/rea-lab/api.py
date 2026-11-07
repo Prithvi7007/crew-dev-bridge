@@ -32,6 +32,8 @@ MAX_FILE_BYTES = 512 * 1024 * 1024  # Matches the existing managed vault.
 MAX_UNPACK_BYTES = 1536 * 1024 * 1024
 MIN_FREE_BYTES = 4 * 1024 * 1024 * 1024
 TIMEOUT_SECONDS = 45 * 60
+# 1.75 GiB heap leaves approximately 508 MiB below the 2300m container cap.
+JADX_HEAP_MIB = 1792
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
 JOB_ID = re.compile(r"[a-f0-9]{32}\Z")
 EXTS = (".apk", ".xapk", ".aab", ".jar", ".zip", ".asar")
@@ -206,7 +208,7 @@ def run_android(path, workspace, out):
     env = dict(os.environ)
     env["HOME"] = str(home)
     env.update({name: str(directory) for name, directory in xdg_dirs.items()})
-    env["JAVA_TOOL_OPTIONS"] = f"-Xmx1536m -Duser.home={home}"
+    env["JAVA_TOOL_OPTIONS"] = f"-Xmx{JADX_HEAP_MIB}m -Duser.home={home}"
     try:
         p = subprocess.run(command, cwd=workspace, env=env, capture_output=True,
                            text=True, timeout=TIMEOUT_SECONDS, check=False)
@@ -215,8 +217,11 @@ def run_android(path, workspace, out):
     except OSError as exc:
         raise LabError("jadx_not_available") from exc
     file_count = sum(1 for p in source_dir.rglob("*") if p.is_file() and not p.is_symlink())
+    logs = p.stdout + p.stderr
     return {"base_apk_entry": nested_entry, "jadx_exit_code": p.returncode,
-            "decompiled_files": file_count, "log_tail": (p.stdout + p.stderr)[-3000:],
+            "jadx_heap_mib": JADX_HEAP_MIB,
+            "out_of_memory": "java.lang.OutOfMemoryError" in logs,
+            "decompiled_files": file_count, "log_tail": logs[-3000:],
             "warning": "Decompiled source is approximate and is not original source."}
 
 
