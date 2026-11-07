@@ -34,6 +34,8 @@ MIN_FREE_BYTES = 4 * 1024 * 1024 * 1024
 TIMEOUT_SECONDS = 45 * 60
 # 1.75 GiB heap leaves approximately 508 MiB below the 2300m container cap.
 JADX_HEAP_MIB = 1792
+# Large base APKs use isolated DEX passes instead of one large JVM load.
+DEX_FIRST_APK_BYTES = 128 * 1024 * 1024
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
 JOB_ID = re.compile(r"[a-f0-9]{32}\Z")
 EXTS = (".apk", ".xapk", ".aab", ".jar", ".zip", ".asar")
@@ -149,6 +151,73 @@ def select_apk(path, workspace):
         return dest, base.filename
 
 
+
+def run_android_per_dex(apk, workspace, source_dir, nested_entry, env):
+    """Bounded per-DEX JADX passes; returns None if the APK has no root DEX."""
+    if not zipfile.is_zipfile(apk):
+        return None
+    with zipfile.ZipFile(apk) as archive:
+        members = safe_members(archive)
+        dex = [item for item in members
+               if re.fullmatch(r"classes(?:[0-9]+)?\.dex", item.filename)]
+        if not dex:
+            return None
+
+        def dex_order(item):
+            suffix = item.filename[len("classes"):-len(".dex")]
+            return int(suffix) if suffix else 1
+
+        dex.sort(key=lambda item: (dex_order(item), item.filename))
+        records = []
+        begin = time.monotonic()
+        for index, item in enumerate(dex, 1):
+            remaining = TIMEOUT_SECONDS - (time.monotonic() - begin)
+            if remaining <= 0:
+                records.append({"entry": item.filename, "error": "time_budget_exhausted"})
+                break
+            dex_file = workspace / f"dex_{index:03d}.dex"
+            output_dir = source_dir / f"dex_{index:03d}"
+            extract_selected(archive, item, dex_file)
+            command = [JADX, "--threads-count", "1", "--no-res",
+                       "--output-dir", str(output_dir), str(dex_file)]
+            try:
+                result = subprocess.run(
+                    command, cwd=workspace, env=env, capture_output=True,
+                    text=True, timeout=remaining, check=False,
+                )
+                log = result.stdout + result.stderr
+                file_count = sum(1 for file in output_dir.rglob("*")
+                                 if file.is_file() and not file.is_symlink())
+                records.append({
+                    "entry": item.filename,
+                    "exit_code": result.returncode,
+                    "decompiled_files": file_count,
+                    "out_of_memory": "java.lang.OutOfMemoryError" in log,
+                    "log_tail": log[-1000:],
+                })
+            except subprocess.TimeoutExpired:
+                records.append({"entry": item.filename, "error": "jadx_timeout"})
+                break
+            finally:
+                dex_file.unlink(missing_ok=True)
+
+    file_count = sum(record.get("decompiled_files", 0) for record in records)
+    succeeded = len(records) == len(dex) and all(
+        record.get("exit_code") == 0 for record in records
+    )
+    return {
+        "base_apk_entry": nested_entry,
+        "analysis_strategy": "individual_dex",
+        "jadx_exit_code": 0 if succeeded else 1,
+        "jadx_heap_mib": JADX_HEAP_MIB,
+        "out_of_memory": any(record.get("out_of_memory", False) for record in records),
+        "decompiled_files": file_count,
+        "dex_total": len(dex),
+        "dex_results": records,
+        "warning": "DEX-level source is approximate; Android resources are not decoded in this mode.",
+    }
+
+
 def collect_native(path, workspace):
     extracted = []
     def visit_zip(source, depth=0):
@@ -209,6 +278,10 @@ def run_android(path, workspace, out):
     env["HOME"] = str(home)
     env.update({name: str(directory) for name, directory in xdg_dirs.items()})
     env["JAVA_TOOL_OPTIONS"] = f"-Xmx{JADX_HEAP_MIB}m -Duser.home={home}"
+    if apk.stat().st_size >= DEX_FIRST_APK_BYTES:
+        result = run_android_per_dex(apk, workspace, source_dir, nested_entry, env)
+        if result is not None:
+            return result
     try:
         p = subprocess.run(command, cwd=workspace, env=env, capture_output=True,
                            text=True, timeout=TIMEOUT_SECONDS, check=False)

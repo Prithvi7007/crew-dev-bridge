@@ -36,6 +36,13 @@ approximately 508 MiB for non-heap memory. Large APKs can still fail JVM OOM.
 The report includes the heap cap and OOM indicator; a nonzero JADX exit code
 does not mean successful decompilation, even when job state is "completed".
 Do not raise the container cap without reviewing peak usage and other services.
+For base APKs at least 128 MiB, the worker processes root classes*.dex entries
+in separate, single-threaded JADX subprocesses (one JVM per DEX) under the
+existing 45-minute total analysis budget. Per-DEX output is namespaced and
+searchable; individual failures and OOMs remain visible in the report.
+This memory-conserving strategy does not decode Android resources, so it is
+not equivalent to a complete APK decompilation. No additional VPS memory,
+container privileges, network access, or filesystem access is granted.
 JADX's per-job Java home and XDG config/cache/data directories live under the
 writable /work volume, not /nonexistent or the read-only container image.
 
