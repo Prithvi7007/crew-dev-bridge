@@ -12,7 +12,7 @@ services:
     init: true
     pids_limit: 160
     mem_limit: 2300m
-    cpus: "1.5"
+    cpus: "0.65"
     networks: [lab_internal]
     volumes:
       - ../rea-lite/managed:/vault:ro
@@ -37,7 +37,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     pids_limit: 64
     mem_limit: 96m
-    cpus: "0.25"
+    cpus: "0.10"
     tmpfs: ["/tmp:rw,nosuid,size=32m"]
     ports: ["127.0.0.1:18766:8080"]
     networks: [lab_access, lab_internal]
