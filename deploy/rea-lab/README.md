@@ -27,11 +27,15 @@ for complete reverse engineering or live app behavior.
 ## Why this is isolated
 
 The current VPS has approximately 4 GiB RAM and shares resources with CREW
-Games and the wedding app. The worker has a 2.3 GiB memory limit, a 1.5 CPU
+Games and the wedding app. The worker has a 2.3 GiB memory limit, a 0.65 CPU
 limit, an offline Docker internal network, and reads the existing vault
 read-only. Each investigation is on-demand; the API stays mostly idle.
-Large APKs (including Ring) can still fail JVM OOM; failure is reported
-rather than silently running with unlimited memory or modifying other apps.
+JADX's JVM heap is capped at 1792 MiB (raised from 1536 MiB following a
+Ring 3.115.0 heap-space failure); the container limit is unchanged and allows
+approximately 508 MiB for non-heap memory. Large APKs can still fail JVM OOM.
+The report includes the heap cap and OOM indicator; a nonzero JADX exit code
+does not mean successful decompilation, even when job state is "completed".
+Do not raise the container cap without reviewing peak usage and other services.
 JADX's per-job Java home and XDG config/cache/data directories live under the
 writable /work volume, not /nonexistent or the read-only container image.
 
