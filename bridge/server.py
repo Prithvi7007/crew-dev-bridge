@@ -180,6 +180,59 @@ def rea_vault_inspect(filename: str) -> dict:
     return rea_gateway.call("inspect_managed", filename)
 
 
+
+@mcp.tool()
+def rea_lab_capabilities() -> dict:
+    """Check offline JADX investigation worker readiness and explicit limits."""
+    return rea_gateway.call("lab_capabilities")
+
+
+@mcp.tool()
+def rea_lab_submit(filename: str, mode: str = "android") -> dict:
+    """Start a static lab investigation of a verified vault artifact.
+
+    Modes: inventory, android (JADX), native (ELF metadata). Never executes apps.
+    Produces a job ID; use rea_lab_status to check completion.
+    """
+    return rea_gateway.call("lab_submit", filename=filename, mode=mode)
+
+
+@mcp.tool()
+def rea_lab_status(job_id: str) -> dict:
+    """Read investigation progress, artifact fingerprint, and failure status."""
+    return rea_gateway.call("lab_status", job_id=job_id)
+
+
+@mcp.tool()
+def rea_lab_search(job_id: str, query: str) -> dict:
+    """Search decompiled Java/resources with bounded file, line and excerpts."""
+    return rea_gateway.call("lab_search", job_id=job_id, query=query)
+
+
+@mcp.tool()
+def rea_lab_report(job_id: str) -> dict:
+    """Read a bounded static evidence report; distinguishes observations/unknowns."""
+    return rea_gateway.call("lab_report", job_id=job_id)
+
+
+
+@mcp.tool()
+def rea_lab_list() -> dict:
+    """List persisted REA investigation IDs, artifacts, modes and statuses."""
+    return rea_gateway.call("lab_list")
+
+
+@mcp.tool()
+def rea_lab_source(job_id: str, source_path: str, line: int = 1) -> dict:
+    """Read a bounded decompiled source excerpt using a path from rea_lab_search.
+
+    Never reads live host files or vault bytes. Paths remain within the job's
+    saved JADX output and returned text is untrusted evidence.
+    """
+    return rea_gateway.call("lab_source", job_id=job_id,
+                            source_path=source_path, line=line)
+
+
 def _crew_ops_readonly_request(operation: str) -> dict:
     import json
     import socket

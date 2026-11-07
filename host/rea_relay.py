@@ -16,6 +16,7 @@ import socketserver
 import stat
 import struct
 from urllib import request
+from urllib.parse import quote
 
 try:
     from . import rea_store
@@ -36,6 +37,8 @@ ALLOWED_OPERATIONS = frozenset((
     "capabilities", "status", "inspect_artifact", "inspect_managed",
     "vault_list", "vault_info", "vault_begin", "vault_chunk",
     "vault_upload_status", "vault_finish", "vault_cancel", "vault_delete",
+    "lab_capabilities", "lab_submit", "lab_status", "lab_search", "lab_report",
+    "lab_source", "lab_list",
 ))
 
 
@@ -199,6 +202,81 @@ def analyze(operation: str, filename: str | None = None) -> dict:
                 pass
 
 
+
+LAB_URL = "http://127.0.0.1:18766"
+LAB_TOKEN = Path("/opt/rea-lab/.token")
+LAB_JOB_PATTERN = re.compile(r"[a-f0-9]{32}\Z")
+
+
+def lab_request(operation: str, payload: dict) -> dict:
+    """Allowlisted, authenticated control plane for the offline analysis worker."""
+    token_file = LAB_TOKEN
+    if token_file.is_symlink() or not token_file.is_file():
+        return {"ok": False, "error": "lab_not_installed"}
+    token = token_file.read_text(encoding="ascii").strip()
+    if len(token) != 64:
+        return {"ok": False, "error": "invalid_lab_token"}
+    job_id = payload.get("job_id", "")
+    if operation in ("lab_status", "lab_report", "lab_search", "lab_source") and (
+        not isinstance(job_id, str) or not LAB_JOB_PATTERN.fullmatch(job_id)
+    ):
+        return {"ok": False, "error": "invalid_job_id"}
+    params = None
+    if operation == "lab_capabilities":
+        endpoint = "/capabilities"
+    elif operation == "lab_list":
+        endpoint = "/jobs"
+    elif operation == "lab_submit":
+        filename = payload.get("filename")
+        mode = payload.get("mode")
+        rea_store.valid_name(filename)
+        if mode not in ("inventory", "android", "native"):
+            return {"ok": False, "error": "invalid_mode"}
+        endpoint = "/jobs"
+        params = json.dumps({"filename": filename, "mode": mode}).encode()
+    elif operation == "lab_status":
+        endpoint = "/jobs/" + job_id
+    elif operation == "lab_report":
+        endpoint = "/jobs/" + job_id + "/report"
+    elif operation == "lab_source":
+        source_path = payload.get("source_path")
+        line = payload.get("line")
+        if (not isinstance(source_path, str) or not 1 <= len(source_path) <= 220
+                or source_path.startswith("/") or "\\" in source_path
+                or ".." in source_path.split("/") or type(line) is not int
+                or not 1 <= line <= 500_000):
+            return {"ok": False, "error": "invalid_source_request"}
+        endpoint = "/jobs/" + job_id + "/source?file=" + quote(source_path, safe="") + "&line=" + str(line)
+    elif operation == "lab_search":
+        query = payload.get("query")
+        if not isinstance(query, str) or not 2 <= len(query) <= 80 or any(ord(c) < 32 for c in query):
+            return {"ok": False, "error": "invalid_query"}
+        endpoint = "/jobs/" + job_id + "/search?q=" + quote(query, safe="")
+    else:
+        return {"ok": False, "error": "operation_not_allowed"}
+    headers = {"X-REA-LAB-TOKEN": token, "Accept": "application/json"}
+    if params is not None:
+        headers["Content-Type"] = "application/json"
+    req = request.Request(LAB_URL + endpoint, data=params, headers=headers,
+                          method="POST" if params is not None else "GET")
+    try:
+        with request.urlopen(req, timeout=16) as response:
+            raw = response.read(250_000)
+            if len(raw) >= 250_000:
+                return {"ok": False, "error": "lab_response_too_large"}
+            decoded = json.loads(raw)
+    except OSError:
+        return {"ok": False, "error": "lab_unavailable_or_request_rejected"}
+    if not isinstance(decoded, dict):
+        return {"ok": False, "error": "invalid_lab_response"}
+    envelope = json.dumps(decoded, separators=(",", ":"))
+    if len(envelope) > 18_000:
+        return {"ok": bool(decoded.get("ok")), "job_id": job_id,
+                "report_excerpt": envelope[:16_000], "truncated": True,
+                "untrusted_target_data": True}
+    return {**decoded, "untrusted_target_data": operation != "lab_capabilities"}
+
+
 def handle(payload: object) -> dict:
     if not isinstance(payload, dict):
         return {"ok": False, "error": "invalid_request"}
@@ -216,6 +294,13 @@ def handle(payload: object) -> dict:
         "vault_finish": {"operation", "upload_id"},
         "vault_cancel": {"operation", "upload_id"},
         "vault_delete": {"operation", "filename", "expected_sha256"},
+        "lab_capabilities": {"operation"},
+        "lab_submit": {"operation", "filename", "mode"},
+        "lab_status": {"operation", "job_id"},
+        "lab_search": {"operation", "job_id", "query"},
+        "lab_report": {"operation", "job_id"},
+        "lab_source": {"operation", "job_id", "source_path", "line"},
+        "lab_list": {"operation"},
     }
     if operation not in allowed_fields:
         return {"ok": False, "error": "operation_not_allowed"}
@@ -232,6 +317,8 @@ def handle(payload: object) -> dict:
                 "max_chunk_bytes": rea_store.MAX_CHUNK_BYTES,
                 "executable_or_dynamic_tools_available": False}
     try:
+        if operation.startswith("lab_"):
+            return lab_request(operation, payload)
         if operation in ("status", "inspect_artifact", "inspect_managed"):
             return analyze(operation, payload.get("filename"))
         if operation == "vault_list":
