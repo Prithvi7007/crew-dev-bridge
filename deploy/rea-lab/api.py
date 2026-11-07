@@ -189,9 +189,24 @@ def run_android(path, workspace, out):
     apk, nested_entry = select_apk(path, workspace)
     source_dir = out / "sources"
     source_dir.mkdir()
+    # The unprivileged user's passwd home may be /nonexistent, while the
+    # container root is read-only. Give JADX and its JVM a per-job writable
+    # home without relaxing the filesystem isolation.
+    home = workspace / "jadx-home"
+    xdg_dirs = {
+        "XDG_CONFIG_HOME": home / ".config",
+        "XDG_CACHE_HOME": home / ".cache",
+        "XDG_DATA_HOME": home / ".local" / "share",
+        "XDG_STATE_HOME": home / ".local" / "state",
+    }
+    home.mkdir(mode=0o700)
+    for directory in xdg_dirs.values():
+        directory.mkdir(parents=True, exist_ok=True)
     command = [JADX, "--threads-count", "2", "--output-dir", str(source_dir), str(apk)]
     env = dict(os.environ)
-    env["JAVA_TOOL_OPTIONS"] = "-Xmx1536m"
+    env["HOME"] = str(home)
+    env.update({name: str(directory) for name, directory in xdg_dirs.items()})
+    env["JAVA_TOOL_OPTIONS"] = f"-Xmx1536m -Duser.home={home}"
     try:
         p = subprocess.run(command, cwd=workspace, env=env, capture_output=True,
                            text=True, timeout=TIMEOUT_SECONDS, check=False)

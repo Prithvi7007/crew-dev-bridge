@@ -32,6 +32,8 @@ limit, an offline Docker internal network, and reads the existing vault
 read-only. Each investigation is on-demand; the API stays mostly idle.
 Large APKs (including Ring) can still fail JVM OOM; failure is reported
 rather than silently running with unlimited memory or modifying other apps.
+JADX's per-job Java home and XDG config/cache/data directories live under the
+writable /work volume, not /nonexistent or the read-only container image.
 
 Disk budget: require 4 GiB free before each analysis; cap vault artifacts at
 512 MiB and archive expanded-size at 1.5 GiB. These operational constraints

@@ -88,10 +88,31 @@ def test_jadx_command_is_shell_free_and_search_has_grounded_lines(workspace, mon
         (out / "sources" / "SomeClass.java").write_text("class App {}\nLiveSessionConnector here\n")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(lab.subprocess, "run", fake_run)
+    # Reproduce the container's non-writable default home.
+    monkeypatch.setenv("HOME", "/nonexistent")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/nonexistent/.config")
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Duser.home=/nonexistent")
     summary = lab.run_android(sample, scratch, out)
     assert summary["decompiled_files"] == 1
     assert seen[0][0][0] == lab.JADX and seen[0][1]["timeout"] == lab.TIMEOUT_SECONDS
     assert "shell" not in seen[0][1]
+    env = seen[0][1]["env"]
+    home = scratch / "jadx-home"
+    assert env["HOME"] == str(home)
+    assert f"-Duser.home={home}" in env["JAVA_TOOL_OPTIONS"]
+    assert "-Xmx1536m" in env["JAVA_TOOL_OPTIONS"]
+    for name, relative in {
+        "XDG_CONFIG_HOME": ".config",
+        "XDG_CACHE_HOME": ".cache",
+        "XDG_DATA_HOME": ".local/share",
+        "XDG_STATE_HOME": ".local/state",
+    }.items():
+        assert env[name] == str(home / relative)
+        assert (home / relative).is_dir()
+    assert "/nonexistent" not in " ".join(env[key] for key in (
+        "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+        "XDG_DATA_HOME", "XDG_STATE_HOME", "JAVA_TOOL_OPTIONS",
+    ))
     job_id = "a" * 32
     folder = reports / job_id
     (folder / "sources").mkdir(parents=True)
@@ -157,6 +178,7 @@ def test_deployment_isolated_and_no_unreviewed_execution():
     assert "127.0.0.1:18766:8080" in compose and "internal: true" in compose
     assert "../rea-lite/managed:/vault:ro" in compose
     assert "cap_drop: [ALL]" in compose and "no-new-privileges:true" in compose
+    assert "read_only: true" in compose
     assert "docker.sock" not in compose
     assert "545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974" in docker
     assert "sha256sum -c -" in docker
