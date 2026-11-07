@@ -144,6 +144,74 @@ def test_jadx_oom_is_reported_with_bounded_heap(workspace, monkeypatch):
     assert result["out_of_memory"] is True
 
 
+
+def test_large_apk_uses_separate_dex_processes(workspace, monkeypatch):
+    vault, reports, scratch = workspace
+    sample = vault / "large.apk"
+    archive(sample, {
+        "classes.dex": b"dex-one",
+        "classes2.dex": b"dex-two",
+        "assets/ignored.dex": b"not-a-root-dex",
+    })
+    out = reports / "dex-job"
+    out.mkdir()
+    monkeypatch.setattr(lab, "DEX_FIRST_APK_BYTES", 1)
+    commands = []
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        assert "--no-res" in args
+        assert args[args.index("--threads-count") + 1] == "1"
+        assert args[-1].endswith(".dex")
+        assert kwargs["env"]["JAVA_TOOL_OPTIONS"].startswith("-Xmx1792m ")
+        destination = Path(args[args.index("--output-dir") + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "Test.java").write_text("class Test {}\\n")
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+    result = lab.run_android(sample, scratch, out)
+    assert len(commands) == 2
+    assert result["analysis_strategy"] == "individual_dex"
+    assert result["dex_total"] == 2
+    assert result["decompiled_files"] == 2
+    assert result["jadx_exit_code"] == 0
+    assert result["out_of_memory"] is False
+    assert [r["entry"] for r in result["dex_results"]] == ["classes.dex", "classes2.dex"]
+    assert not list(scratch.glob("dex_*.dex"))
+    assert (out / "sources" / "dex_001" / "Test.java").is_file()
+
+
+def test_per_dex_reports_partial_success_and_oom(workspace, monkeypatch):
+    vault, reports, scratch = workspace
+    sample = vault / "app.apk"
+    archive(sample, {"classes.dex": b"one", "classes2.dex": b"two"})
+    out = reports / "partial-job"
+    out.mkdir()
+    attempts = []
+
+    def fake_run(args, **kwargs):
+        attempts.append(args[-1])
+        destination = Path(args[args.index("--output-dir") + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        if len(attempts) == 1:
+            return SimpleNamespace(returncode=1, stdout="",
+                                   stderr="java.lang.OutOfMemoryError: Java heap space")
+        (destination / "Recovered.java").write_text("class Recovered {}\\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(lab.subprocess, "run", fake_run)
+    monkeypatch.setattr(lab, "DEX_FIRST_APK_BYTES", 1)
+    result = lab.run_android(sample, scratch, out)
+    assert len(attempts) == 2
+    assert result["jadx_exit_code"] == 1
+    assert result["out_of_memory"] is True
+    assert result["decompiled_files"] == 1
+    assert result["dex_total"] == 2
+    assert result["dex_results"][0]["exit_code"] == 1
+    assert result["dex_results"][1]["exit_code"] == 0
+
+
 def test_source_excerpt_and_job_list_are_path_safe(workspace):
     vault, reports, _ = workspace
     job_id = "b" * 32
