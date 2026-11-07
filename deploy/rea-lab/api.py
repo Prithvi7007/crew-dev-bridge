@@ -24,6 +24,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 import uuid
 import zipfile
+from urllib import request as urllib_request
 
 VAULT = Path(os.environ.get("REA_LAB_VAULT", "/vault"))
 RESULTS = Path(os.environ.get("REA_LAB_RESULTS", "/results"))
@@ -42,6 +43,7 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
 JOB_ID = re.compile(r"[a-f0-9]{32}\Z")
 EXTS = (".apk", ".xapk", ".aab", ".jar", ".zip", ".asar")
 MODES = ("inventory", "android", "native")
+WEB_CAPTURE_URL = os.environ.get("REA_WEB_CAPTURE_URL", "http://web_capture:8767/capture")
 _LOCK = threading.Lock()
 _ACTIVE: str | None = None
 _INDEX_ACTIVE: str | None = None
@@ -52,6 +54,16 @@ def intelligence():
     """Load only the installed sibling module (works in offline test imports)."""
     path = Path(__file__).with_name("intelligence.py")
     spec = importlib.util.spec_from_file_location("rea_lab_intelligence", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@lru_cache(maxsize=1)
+def web_intelligence():
+    """Load locally installed offline public-web code analyzer."""
+    path = Path(__file__).with_name("web_intelligence.py")
+    spec = importlib.util.spec_from_file_location("rea_web_intelligence", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -369,10 +381,88 @@ def run_job(job_id, filename, mode):
                 _ACTIVE = None
 
 
+
+def run_web_job(job_id, target):
+    """Snapshot through separately networked sidecar; never add worker egress."""
+    global _ACTIVE
+    folder = RESULTS / job_id
+    data = read_job(job_id)
+    try:
+        if shutil.disk_usage(RESULTS).free < MIN_FREE_BYTES:
+            raise LabError("insufficient_free_disk")
+        body = json.dumps({"url": target}).encode("utf-8")
+        req = urllib_request.Request(
+            WEB_CAPTURE_URL, data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "X-REA-LAB-TOKEN": TOKEN_FILE.read_text(encoding="ascii").strip()},
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=220) as response:
+                blob = response.read(15_000_001)
+            if len(blob) > 15_000_000:
+                raise LabError("web_capture_too_large")
+            capture = json.loads(blob)
+        except (OSError, ValueError):
+            raise LabError("web_capture_unavailable_or_rejected") from None
+        if not isinstance(capture, dict) or capture.get("ok") is not True:
+            raise LabError("web_capture_rejected")
+        obs = web_intelligence().analyze_and_save(folder, capture)
+        sig = hashlib.sha256("".join(x["sha256"] for x in obs["client_assets"]).encode()).hexdigest()
+        data.update({"state": "completed",
+                     "analysis_result": "partial" if obs["asset_errors"] else "clean_static_snapshot",
+                     "sha256": sig, "finished_epoch": int(time.time())})
+        write_json(folder / "report.json", {
+            "artifact": data["artifact"], "artifact_sha256": sig, "mode": "web",
+            "evidence_type": "public_web_static_snapshot",
+            "observations": obs,
+            "unknowns": ["Private backend/model identity and runtime behavior are unobserved."],
+        })
+    except Exception as exc:
+        data.update({"state": "failed",
+                     "error": str(exc) if isinstance(exc, LabError) else "web_analysis_failed",
+                     "finished_epoch": int(time.time())})
+    finally:
+        write_json(folder / "status.json", data)
+        with _LOCK:
+            if _ACTIVE == job_id:
+                _ACTIVE = None
+
+
+def start_web_job(target):
+    """One immutable public web snapshot under the existing job concurrency gate."""
+    global _ACTIVE
+    if not isinstance(target, str) or not 12 <= len(target) <= 2048:
+        raise LabError("invalid_web_url")
+    parsed = urlsplit(target)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise LabError("invalid_web_url") from None
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or port not in (None, 443)
+            or any(ord(c) < 32 or ord(c) == 127 for c in target)):
+        raise LabError("public_https_url_required")
+    # The sidecar independently blocks private DNS, redirects, credentials and IP URLs.
+    display = "https://" + parsed.hostname + (parsed.path or "/")
+    with _LOCK:
+        if _ACTIVE is not None or _INDEX_ACTIVE is not None:
+            raise LabError("analysis_busy")
+        job_id = uuid.uuid4().hex
+        folder = RESULTS / job_id
+        folder.mkdir(mode=0o700)
+        write_json(folder / "status.json", {
+            "job_id": job_id, "artifact": display[:260], "mode": "web",
+            "state": "running", "started_epoch": int(time.time()),
+        })
+        _ACTIVE = job_id
+        threading.Thread(target=run_web_job, args=(job_id, target), daemon=True).start()
+    return {"ok": True, "job_id": job_id, "state": "running", "mode": "web"}
+
+
 def index_state(job_id):
     job = read_job(job_id)
-    if job["mode"] != "android" or job["state"] != "completed":
-        raise LabError("index_requires_completed_android_job")
+    if job["mode"] not in ("android", "web") or job["state"] != "completed":
+        raise LabError("index_requires_completed_static_job")
     root = RESULTS / job_id
     if (root / "intelligence.sqlite").is_file():
         status_file = root / "index.json"
@@ -420,7 +510,8 @@ def compact_summary(job_id, offset=0, limit=12):
         raise LabError("report_not_ready")
     report_path = RESULTS / job_id / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    return {"job_id": job_id, **intelligence().compact_report(report, offset, limit)}
+    return {"job_id": job_id, **(web_intelligence().compact_web_report(report, offset, limit)
+                                  if job["mode"] == "web" else intelligence().compact_report(report, offset, limit))}
 
 
 def ready_index(job_id):
@@ -451,15 +542,15 @@ def start_job(filename, mode):
 
 def search_job(job_id, term):
     data = read_job(job_id)
-    if data["state"] != "completed" or data["mode"] != "android":
-        raise LabError("search_requires_completed_android_job")
+    if data["state"] != "completed" or data["mode"] not in ("android", "web"):
+        raise LabError("search_requires_completed_static_job")
     if not isinstance(term, str) or not 2 <= len(term) <= 80 or any(ord(c) < 32 for c in term):
         raise LabError("invalid_query")
     root = RESULTS / job_id / "sources"
     matches = []
     scanned = 0
     for p in root.rglob("*"):
-        if not p.is_file() or p.is_symlink() or p.suffix.lower() not in (".java", ".xml", ".json", ".kt"):
+        if not p.is_file() or p.is_symlink() or p.suffix.lower() not in (".java", ".xml", ".json", ".kt", ".js", ".html", ".txt"):
             continue
         if p.stat().st_size > 2 * 1024 * 1024:
             continue
@@ -480,11 +571,11 @@ def source_excerpt(job_id, filename, first_line):
     """Bounded, path-safe read of a JADX-produced source file, never input vault."""
     from pathlib import PurePosixPath
     job = read_job(job_id)
-    if job["state"] != "completed" or job["mode"] != "android":
-        raise LabError("source_requires_completed_android_job")
+    if job["state"] != "completed" or job["mode"] not in ("android", "web"):
+        raise LabError("source_requires_completed_static_job")
     if (not isinstance(filename, str) or not 1 <= len(filename) <= 220
             or filename.startswith("/") or "\\" in filename
-            or not filename.lower().endswith((".java", ".kt", ".xml", ".json"))):
+            or not filename.lower().endswith((".java", ".kt", ".xml", ".json", ".js", ".html", ".txt"))):
         raise LabError("invalid_source_path")
     rel = PurePosixPath(filename)
     if any(part in (".", "..", "") for part in rel.parts):
@@ -559,9 +650,19 @@ class Handler(BaseHTTPRequestHandler):
                                "runtime_execution": False,
                                "source_index": True, "intelligence_packets": True,
                                "static_dependency_graph": True, "dashboard": "/dashboard",
-                               "external_ai_execution": False})
+                               "external_ai_execution": False,
+                               "web_intelligence": True, "web_capture_service": "separate_public_https_sidecar",
+                               "web_runtime_execution": False})
         elif self.command == "GET" and parts == ["jobs"]:
             self.respond(200, list_jobs())
+        elif self.command == "POST" and parts == ["jobs", "web"]:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 4096:
+                raise LabError("invalid_request_length")
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict) or set(data) != {"url"}:
+                raise LabError("invalid_fields")
+            self.respond(202, start_web_job(data["url"]))
         elif self.command == "POST" and parts == ["jobs"]:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 1 or length > 4096:
@@ -596,13 +697,34 @@ class Handler(BaseHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 if set(qs) != {"q"} or len(qs["q"]) != 1:
                     raise LabError("invalid_query")
-                self.respond(200, intelligence().dependency_graph(ready_index(job_id), qs["q"][0]))
+                root = ready_index(job_id)
+                if read_job(job_id)["mode"] == "web":
+                    report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+                    self.respond(200, web_intelligence().web_graph(report, qs["q"][0]))
+                else:
+                    self.respond(200, intelligence().dependency_graph(root, qs["q"][0]))
             elif len(parts) == 3 and parts[2] == "investigate":
                 qs = parse_qs(parsed.query)
                 if set(qs) != {"q", "focus"} or any(len(x) != 1 for x in qs.values()):
                     raise LabError("invalid_query")
-                self.respond(200, intelligence().investigate(
-                    ready_index(job_id), qs["q"][0], qs["focus"][0]))
+                root = ready_index(job_id)
+                packet = intelligence().investigate(root, qs["q"][0], qs["focus"][0])
+                if read_job(job_id)["mode"] == "web":
+                    report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+                    packet["dependencies"] = web_intelligence().web_graph(report, qs["q"][0])["edges"]
+                    packet["assessment"] = "Static browser-side references only; backend/model behavior unknown."
+                self.respond(200, packet)
+            elif len(parts) == 3 and parts[2] == "compare":
+                qs = parse_qs(parsed.query)
+                if set(qs) != {"other"} or len(qs["other"]) != 1:
+                    raise LabError("invalid_web_compare")
+                newer = qs["other"][0]
+                if (read_job(job_id)["mode"] != "web" or read_job(newer)["mode"] != "web"
+                        or read_job(job_id)["state"] != "completed" or read_job(newer)["state"] != "completed"):
+                    raise LabError("web_jobs_required")
+                old = json.loads((RESULTS / job_id / "report.json").read_text())
+                new = json.loads((RESULTS / newer / "report.json").read_text())
+                self.respond(200, web_intelligence().compare_web_reports(old, new))
             elif len(parts) == 3 and parts[2] == "report":
                 if read_job(job_id)["state"] != "completed":
                     raise LabError("report_not_ready")

@@ -11,7 +11,7 @@ import zipfile
 MAX_FILES = 150_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_TEXT_BYTES = 96 * 1024 * 1024
-SOURCE_SUFFIXES = {".java", ".kt", ".xml", ".json"}
+SOURCE_SUFFIXES = {".java", ".kt", ".xml", ".json", ".js", ".html", ".txt"}
 TOKENS = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,45}")
 SYMBOL = re.compile(r"\b(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
 METHOD = re.compile(r"^\s*(?:(?:public|private|protected|static|final|suspend|abstract|override|native|synchronized|open|internal|inline)\s+)+[\w.$<>?\[\], ]+\s+([A-Za-z_$][\w$]*)\s*\(")
