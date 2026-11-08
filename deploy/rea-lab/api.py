@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 import uuid
 import zipfile
 from urllib import request as urllib_request
+from urllib.error import HTTPError
 
 VAULT = Path(os.environ.get("REA_LAB_VAULT", "/vault"))
 RESULTS = Path(os.environ.get("REA_LAB_RESULTS", "/results"))
@@ -402,6 +403,18 @@ def run_web_job(job_id, target):
             if len(blob) > 15_000_000:
                 raise LabError("web_capture_too_large")
             capture = json.loads(blob)
+        except HTTPError as exc:
+            # Sidecar rejection reasons are pre-defined short error codes.
+            # Never propagate arbitrary HTML, headers, source bytes or secrets.
+            try:
+                response = json.loads(exc.read(1024))
+                reason = response.get("error") if isinstance(response, dict) else None
+            except (OSError, ValueError, AttributeError, TypeError):
+                reason = None
+            if (not isinstance(reason, str) or len(reason) > 100
+                    or not re.fullmatch(r"[a-z0-9_]+", reason)):
+                reason = "rejected"
+            raise LabError("web_capture_" + reason) from None
         except (OSError, ValueError):
             raise LabError("web_capture_unavailable_or_rejected") from None
         if not isinstance(capture, dict) or capture.get("ok") is not True:
