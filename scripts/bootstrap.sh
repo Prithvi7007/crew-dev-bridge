@@ -52,6 +52,13 @@ if [ ! -f secrets/career_github_token ]; then
   (umask 077; printf '%s\n' "$career_token" > secrets/career_github_token)
   unset career_token
 fi
+if [ -e bolt-source ] && [ ! -d bolt-source/.git ]; then
+  echo 'bolt-source exists but is not a Git checkout; refusing to overwrite.' >&2
+  exit 1
+fi
+if [ ! -d bolt-source/.git ]; then
+  git clone --no-tags --branch main https://github.com/Prithvi7007/Bolt_ai.git bolt-source
+fi
 # The runner image is built ONLY at setup/rebuild; it does not have production mounts.
 # Use a temporary combined Docker build context for the pinned repo dependencies and worker.
 mkdir -p .runner-context
@@ -59,10 +66,10 @@ cp source/requirements.txt .runner-context/requirements.txt
 cp wedding-source/requirements.txt .runner-context/wedding-requirements.txt
 mkdir -p .runner-context/frontend .runner-context/runner
 cp source/frontend/package.json source/frontend/package-lock.json .runner-context/frontend/
-cp runner/worker.py .runner-context/runner/
+cp runner/worker.py runner/bolt-requirements.txt .runner-context/runner/
 docker build --pull -t crew-dev-runner:local -f runner/Dockerfile .runner-context
 rm -rf .runner-context
-chown -R 10001:10001 source wedding-source career-source queue secrets audit
+chown -R 10001:10001 source wedding-source career-source bolt-source queue secrets audit
 chmod 0700 secrets audit
 # The bridge (10001:10001) and runner supervisor (0:10001) share
 # a group-private queue; test subprocesses (10002:10002) cannot enter.
