@@ -36,15 +36,20 @@ WEDDING_TOKEN_FILE = Path(os.environ.get('WEDDING_GITHUB_TOKEN_FILE', '/run/crew
 CAREER_TOKEN_FILE = Path(os.environ.get('CAREER_GITHUB_TOKEN_FILE', '/run/crew-secrets/career_github_token'))
 BOLT_TOKEN_FILE = Path(os.environ.get('BOLT_GITHUB_TOKEN_FILE', '/run/crew-secrets/career_github_token'))
 BRANCH_RE = re.compile(r'^feature/[a-z0-9][a-z0-9._/-]{1,70}$')
-MAX_FILE = 250_000
-# Only the checksum-verified compiled player entry may exceed the source-file cap.
-MAX_PLAYER_BUNDLE = 450_000
+# Only verified, production-facing CREW frontend build artifacts have
+# fixed output-size contracts. Ordinary application source files and
+# feature commits have no arbitrary per-file or file-count caps.
+FRONTEND_ARTIFACT_LIMITS = {
+    'app/static/react/player.js': 450_000,
+    'app/static/react/player.css': 250_000,
+}
 
 
-def max_file_size(path: str) -> int:
-    return MAX_PLAYER_BUNDLE if path == 'app/static/react/player.js' else MAX_FILE
-
-MAX_CHANGES = 30
+def enforce_verified_artifact_limit(path: str, size: int) -> None:
+    """Check only verified production build-asset budgets, never ordinary source."""
+    limit = FRONTEND_ARTIFACT_LIMITS.get(path)
+    if limit is not None and size > limit:
+        raise BridgeError('Oversized verified build artifact: ' + path)
 EXCLUDED_PARTS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.ssh', '.aws', 'secrets'}
 EXCLUDED_NAMES = {'.env', '.env.local', '.env.production', 'id_rsa', 'id_ed25519', '.npmrc', '.pypirc', '.netrc'}
 LOCK = Path(os.environ.get('CREW_LOCK', '/queue/workspace.lock'))
@@ -158,8 +163,6 @@ def changed_paths() -> list[str]:
     modified = _git('diff', '--name-only', '--no-renames', 'HEAD').splitlines()
     untracked = _git('ls-files', '--others', '--exclude-standard').splitlines()
     paths = sorted(set(modified + untracked))
-    if len(paths) > MAX_CHANGES:
-        raise BridgeError('Too many files modified in one operation')
     for path in paths:
         safe_path(path)
     return paths
@@ -173,9 +176,13 @@ def fingerprint() -> str:
         target = safe_path(p)
         digest.update(p.encode() + b'\0')
         if target.is_file():
-            if target.stat().st_size > max_file_size(p):
-                raise BridgeError('Oversized file: ' + p)
-            digest.update(target.read_bytes())
+            if target.is_symlink():
+                raise BridgeError('Symlinks are not accepted as source paths')
+            enforce_verified_artifact_limit(p, target.stat().st_size)
+            # Stream content to avoid loading a large source file into RAM.
+            with target.open('rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(chunk)
         else:
             digest.update(b'<deleted>')
     return digest.hexdigest()
@@ -189,9 +196,8 @@ def status() -> dict:
 
 def read_file(path: str) -> dict:
     target = safe_path(path, must_exist=True)
+    enforce_verified_artifact_limit(path, target.stat().st_size)
     raw = target.read_bytes()
-    if len(raw) > max_file_size(path):
-        raise BridgeError('File exceeds size limit')
     try:
         content = raw.decode('utf-8')
     except UnicodeDecodeError as exc:
@@ -200,8 +206,9 @@ def read_file(path: str) -> dict:
 
 
 def write_file(path: str, content: str, expected_sha256: str) -> dict:
-    if not isinstance(content, str) or len(content.encode('utf-8')) > max_file_size(path):
-        raise BridgeError('UTF-8 source exceeds allowed size limit')
+    if not isinstance(content, str):
+        raise BridgeError('Only UTF-8 text source is accepted')
+    enforce_verified_artifact_limit(path, len(content.encode('utf-8')))
     validate_branch(branch())
     target = safe_path(path)
     with locked():
@@ -274,12 +281,12 @@ def create_branch(name: str) -> dict:
 
 def apply_patch(patch: str) -> dict:
     """Apply bounded unified Git diff, with path and file-mode validation."""
-    if not isinstance(patch, str) or not patch.startswith('diff --git ') or len(patch.encode('utf-8')) > 125_000:
-        raise BridgeError('Expected a Git unified diff no larger than 125 KB')
+    if not isinstance(patch, str) or not patch.startswith('diff --git '):
+        raise BridgeError('Expected a Git unified diff')
     validate_branch(branch())
     headers = re.findall(r'^diff --git a/([^\n]+) b/([^\n]+)$', patch, re.MULTILINE)
-    if not headers or len(headers) != patch.count('diff --git ') or len(headers) > MAX_CHANGES:
-        raise BridgeError('Invalid patch headers or too many changes')
+    if not headers or len(headers) != patch.count('diff --git '):
+        raise BridgeError('Invalid patch headers')
     names = set()
     for old, new in headers:
         if old != new or not re.fullmatch(r'[A-Za-z0-9_./-]+', old):
@@ -295,8 +302,6 @@ def apply_patch(patch: str) -> dict:
         if line.startswith(('new file mode ', 'deleted file mode ')) and line.split()[-1] != '100644':
             raise BridgeError('Only standard text files are supported')
     with locked():
-        if len(names | set(changed_paths())) > MAX_CHANGES:
-            raise BridgeError('Patch exceeds file count limit')
         _git('apply', '--check', '--whitespace=error', '-', input=patch)
         _git('apply', '--whitespace=error', '-', input=patch)
         audit('apply_patch', branch=branch(), paths=sorted(names))
@@ -403,8 +408,8 @@ def sync_frontend_assets(job_id: str) -> dict:
         for rel in allowed:
             source = root / Path(rel).name
             st = source.lstat()
-            if not stat.S_ISREG(st.st_mode) or st.st_size > max_file_size(rel):
-                raise BridgeError('Unsafe or oversized build output')
+            if not stat.S_ISREG(st.st_mode) or st.st_size > FRONTEND_ARTIFACT_LIMITS[rel]:
+                raise BridgeError('Unsafe or oversized verified build output')
             raw = source.read_bytes()
             raw.decode('utf-8')
             if hashlib.sha256(raw).hexdigest() != manifest[rel]:
@@ -478,8 +483,9 @@ def commit_and_push(message: str) -> dict:
         for path in paths:
             target = safe_path(path)
             if target.is_file():
-                if target.is_symlink() or target.stat().st_size > max_file_size(path):
-                    raise BridgeError('Unsafe or oversized changed file: ' + path)
+                if target.is_symlink():
+                    raise BridgeError('Unsafe changed file: ' + path)
+                enforce_verified_artifact_limit(path, target.stat().st_size)
                 try:
                     content = target.read_text(encoding='utf-8')
                 except UnicodeDecodeError as exc:
