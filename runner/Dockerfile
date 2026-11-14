@@ -14,6 +14,8 @@ ARG CREW_MOTION_VERSION=14.6.0
 RUN cd /opt/frontend && npm install --no-save --no-package-lock --ignore-scripts "motion@${CREW_MOTION_VERSION}" \
     && node -e "if (require('./node_modules/motion/package.json').version !== '${CREW_MOTION_VERSION}') process.exit(1)"
 WORKDIR /opt/worker
+COPY runner/bolt-requirements.txt /tmp/bolt-requirements.txt
+RUN python3 -m venv /opt/bolt-venv && /opt/bolt-venv/bin/pip install --no-cache-dir -r /tmp/bolt-requirements.txt
 COPY runner/worker.py /opt/worker/worker.py
 ENV PATH=/opt/crew-venv/bin:/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1
 # Container supervisor runs as root with only narrowly scoped identity-switching caps.

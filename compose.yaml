@@ -23,6 +23,8 @@ services:
       WEDDING_GITHUB_TOKEN_FILE: /run/crew-secrets/wedding_github_token
       CAREER_WORKSPACE: /career-source
       CAREER_GITHUB_TOKEN_FILE: /run/crew-secrets/career_github_token
+      BOLT_WORKSPACE: /bolt-source
+      BOLT_GITHUB_TOKEN_FILE: /run/crew-secrets/career_github_token
       CREW_QUEUE: /queue
       CREW_AUDIT: /audit/events.jsonl
       CREW_GITHUB_TOKEN_FILE: /run/crew-secrets/github_token
@@ -33,6 +35,7 @@ services:
       - ./bridge-source:/bridge-source:rw
       - ./wedding-source:/wedding-source:rw
       - ./career-source:/career-source:rw
+      - ./bolt-source:/bolt-source:rw
       - ./queue:/queue:rw
       - ./secrets:/run/crew-secrets:ro
       - ./audit:/audit:rw
