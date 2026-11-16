@@ -10,7 +10,7 @@ import tempfile
 import time
 
 QUEUE = Path('/queue')
-ALLOWED = {'pytest', 'react_build', 'bridge_syntax', 'wedding_syntax', 'career_test', 'career_syntax'}
+ALLOWED = {'pytest', 'react_build', 'bridge_syntax', 'wedding_syntax', 'career_test', 'career_syntax', 'bolt_api_tests', 'bolt_desktop_syntax'}
 # Bound the one compiled JS entry, not general source files or other assets.
 FRONTEND_ARTIFACT_MAX = {'app/static/react/player.js': 450_000,
                          'app/static/react/player.css': 250_000}
@@ -64,6 +64,7 @@ def execute(ticket: dict) -> dict:
         'Prithvi7007/crew-dev-bridge': {'pytest', 'bridge_syntax'},
         'Prithvi7007/Wedding_Website_Final': {'pytest', 'wedding_syntax'},
         'Prithvi7007/Career-intelligence': {'career_test', 'career_syntax'},
+        'Prithvi7007/Bolt_ai': {'bolt_api_tests', 'bolt_desktop_syntax'},
     }
     if repository not in checks_by_repo:
         raise ValueError('Unsupported repository')
@@ -93,6 +94,11 @@ def execute(ticket: dict) -> dict:
             cmd, cwd = ['/opt/wedding-venv/bin/python', '-m', 'compileall', '-q', 'app', 'tests', 'wsgi.py'], working
         elif kind == 'bridge_syntax':
             cmd, cwd = ['python', '-m', 'compileall', '-q', 'bridge', 'host', 'runner', 'tests'], working
+        elif kind == 'bolt_api_tests':
+            env['PYTHONPATH'] = str(working / 'services' / 'api')
+            cmd, cwd = ['/opt/bolt-venv/bin/python', '-m', 'pytest', '-q', 'services/api/tests'], working
+        elif kind == 'bolt_desktop_syntax':
+            cmd, cwd = ['node', '--check', 'apps/desktop/electron/main.cjs'], working
         elif kind == 'career_test':
             cmd, cwd = ['node', '--test'], working
         elif kind == 'career_syntax':

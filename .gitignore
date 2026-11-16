@@ -9,4 +9,6 @@ __pycache__/
 .env.*
 /bridge-source/
 /wedding-source/
+/career-source/
+/bolt-source/
 /.host-agent-venv/
